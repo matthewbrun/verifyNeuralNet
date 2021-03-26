@@ -1,6 +1,9 @@
 import keras
 from keras import layers
 
+import nnet
+import numpy as np
+
 
 
 def train_model():
@@ -12,3 +15,14 @@ def train_model():
     return model
 
 
+def test_bounds():
+
+    m = train_model()
+    n = nnet.Sequential(m)
+
+    inp = np.arange(8)
+    d = .5
+
+    n.generate_bounds(1, inp, d)
+
+    return n

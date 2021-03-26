@@ -1,4 +1,6 @@
+import numpy as np
 import keras
+
 
 class Sequential:
 
@@ -14,17 +16,21 @@ class Sequential:
 
                 self.layers.append(layerclass)
 
-        def generate_bounds(self, method):
-            """
+    def generate_bounds(self, method, input, distance):
+        """
 
-            :param self:
-            :param method: 1 = IntervalArithmetic
-            :return:
-            """
+        :param method: method for bound propogation, 1 = interval arithmetic
+        :param input: numeric input to verify
+        :param distance: l_inf distance around input to consider
+        :return:
+        """
+        input_u = input + distance
+        input_l = input - distance
+        self.layers[0].generate_bounds(method, input_l, input_u)
 
-            for layer in range(len(self.layers)):
-
-                layer.generate_bounds(method)
+        for i in range(1,len(self.layers)):
+            prev_layer = self.layers[i-1]
+            self.layers[i].generate_bounds(method, prev_layer.lb, prev_layer.ub)
 
 
 
@@ -42,7 +48,7 @@ class Layer:
 
 class Dense(Layer):
 
-    def generate_bounds(self, method, prev_weights, prev_l, prev_u):
+    def generate_bounds(self, method, prev_l, prev_u):
         """
 
         :param method: 1 = Interval Arithmetic
@@ -50,3 +56,11 @@ class Dense(Layer):
         """
 
         if method == 1:
+
+            uweight = np.where(self.weights > 0, self.weights, 0)
+            lweight = np.where(self.weights < 0, self.weights, 0)
+
+            self.ub = np.matmul(uweight.T, prev_u) + np.matmul(lweight.T, prev_l) + self.bias
+            self.lb = np.matmul(uweight.T, prev_l) + np.matmul(lweight.T, prev_u) + self.bias
+
+
