@@ -13,8 +13,8 @@ class Sequential:
         self.input_shape = network.layers[0].get_weights()[0].shape[0]
         self.layers = []
 
-        for i in range(len(network.layers)):
-            layer = network.layers[i]
+        for i, layer in enumerate(network.layers):
+
             if isinstance(layer, keras.layers.core.Dense):
                 #Add dense ReLU layer to instance
                 assert( layer.activation == keras.activations.relu )
@@ -41,7 +41,7 @@ class Sequential:
         self.layers[0].generate_bounds(method, input_lb, input_ub)
 
         #Iteratively generate bounds on successive layers
-        for i in range(1,len(self.layers)):
+        for i, layer in enumerate(self.layers[1:],start=1):
             prev_layer = self.layers[i-1]
             self.layers[i].generate_bounds(method, prev_layer.relu_lb, prev_layer.relu_ub)
 

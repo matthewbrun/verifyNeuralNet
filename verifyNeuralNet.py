@@ -34,10 +34,9 @@ def bigMLP(network, input, inf_d, real_class, pred_class, method):
 
     layer_vars = {"input":x} #Dictionary of layer output variables
 
-    for i in range(len(n.layers)): #Iterate over each layer
+    for i, layer in enumerate(n.layers): #Iterate over each layer
 
         #Get name for layer and previous layer
-        layer = n.layers[i]
         name = layer.label
         if i > 0:
             prev_layer = n.layers[i-1]
