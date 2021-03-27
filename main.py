@@ -31,10 +31,11 @@ def test_bounds():
     return n
 
 def test_LP():
+
     m = train_model()
     inp = np.arange(24)
     d = .5
 
-    print(vnn.bigMLP(m, inp, d, 0, 1, 1))
+    return vnn.bigMLP(m, inp, d, 0, 1, 1)
 
 test_LP()
