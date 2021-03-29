@@ -36,6 +36,29 @@ def test_LP():
     inp = np.arange(24)
     d = .5
 
-    return vnn.bigMLP(m, inp, d, 0, 1, 1)
+    print(vnn.bigMLP(m, inp, d, 0, 1, 1))
+
+    print(vnn.bigMLP(m, inp, d, 0, 1, 2))
+
+
+def test_deeppoly_bounds():
+
+    m = train_model()
+    n = nnet.Sequential(m)
+    n2 = nnet.Sequential(m)
+
+    inp = np.arange(24)
+    d = .5
+
+    n.generate_bounds(2, inp, d)
+
+    n2.generate_bounds(1, inp, d)
+
+    print("\n\n\n")
+    for layer in n2.layers:
+        print(layer.numeric_aff_lb)
+        print(layer.numeric_aff_ub)
+
+#test_deeppoly_bounds()
 
 test_LP()

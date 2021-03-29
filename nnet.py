@@ -39,23 +39,101 @@ class Sequential:
 
         if method == 1: #Interval arithmetic
             #Generate first layer bounds from
-            self.layers[0].generate_interval_bounds(method, input_lb, input_ub)
+            self.layers[0].generate_interval_bounds(input_lb, input_ub)
 
             #Iteratively generate bounds on successive layers
             for i, layer in enumerate(self.layers[1:],start=1):
                 prev_layer = self.layers[i-1]
-                self.layers[i].generate_interval_bounds(prev_layer.relu_lb, prev_layer.relu_ub)
+                self.layers[i].generate_interval_bounds(prev_layer.numeric_relu_lb, prev_layer.numeric_relu_ub)
 
         if method == 2: #DeepPoly
-
+            # Iteratively generate bounds on successive layers
             for i, layer in enumerate(self.layers):
+                #Generate lower and upper bounds from a backwards pass
+                L, U = self.backwards_pass(i, input_lb, input_ub)
+
+                #Set layer numeric lower and upper affine bounds
+                layer.numeric_aff_ub = U
+                layer.numeric_aff_lb = L
+
+                #Generate lower and upper bounding affine function for layer
+
+                ub_w = layer.weights #upper bounding weights matrix
+                lb_w = layer.weights #lower bounding weights matrix
+
+                ub_b = layer.bias #upper bounding intercept
+                lb_b = layer.bias #lower bounding intercept
+
+                for i in range(len(U)):
+
+                    #If U <= 0, inactive, set bounding functions to 0
+                    if U[i] <= 0:
+                        ub_w[:,i] = 0
+                        lb_w[:,i] = 0
+
+                        ub_b[i] = 0
+                        lb_b[i] = 0
+
+                    #If U > 0 and L < 0, use DeepPoly bounding functions
+                    elif L[i] < 0:
+
+                        ub_w[:,i] = U[i]/(U[i]-L[i]) * ub_w[:,i]
+                        ub_b[i] = U[i]/(U[i]-L[i]) * (ub_b[i] - L[i])
+
+                        if abs(L[i]) >= abs(U[i]):
+
+                            lb_w[:,i] = 0
+                            lb_b[i] = 0
+
+                #Add bounding function parameters to layer object
+                layer.funcw_aff_ub = ub_w
+                layer.funcw_aff_lb = lb_w
+
+                layer.funcb_aff_ub = ub_b
+                layer.funcb_aff_lb = lb_b
 
 
 
-    def backwards_pass(self, neuron):
 
-        pass
 
+
+
+    def backwards_pass(self, neuron, input_lb, input_ub):
+
+        #Get current neuron affine functions
+        c_uw = self.layers[neuron].weights #positive for upper bound
+        c_ub = self.layers[neuron].bias
+
+        c_lw = -self.layers[neuron].weights #negative for lower bound
+        c_lb = -self.layers[neuron].bias
+
+        #Iterate backwards over layers
+        for i in range(neuron-1,-1,-1):
+
+            cuwp = np.where(c_uw > 0, c_uw, 0) #postive weight matrix for upper bound
+            cuwn = np.where(c_uw < 0, c_uw, 0) #negative weight matrix for upper bound
+
+            clwp = np.where(c_lw > 0, c_lw, 0) #positive weight matrix for lower bound
+            clwn = np.where(c_lw < 0, c_lw, 0) #negative weight matrix for lower bound
+
+            #Transform weights/bias backwards through layer by taking affine composite
+            c_uw = np.matmul(self.layers[i].funcw_aff_ub, cuwp) + np.matmul(self.layers[i].funcw_aff_lb, cuwn)
+            c_lw = np.matmul(self.layers[i].funcw_aff_ub, clwp) + np.matmul(self.layers[i].funcw_aff_lb, clwn)
+
+            c_ub = c_ub + np.matmul(self.layers[i].funcb_aff_ub, cuwp) + np.matmul(self.layers[i].funcb_aff_lb, cuwn)
+            c_lb = c_lb + np.matmul(self.layers[i].funcb_aff_ub, clwp) + np.matmul(self.layers[i].funcb_aff_lb, clwn)
+
+        #Maximize upper/lower bound over input space
+        cuwp = np.where(c_uw > 0, c_uw, 0)
+        cuwn = np.where(c_uw < 0, c_uw, 0)
+
+        clwp = np.where(c_lw > 0, c_lw, 0)
+        clwn = np.where(c_lw < 0, c_lw, 0)
+
+        ub = np.matmul(cuwp.T, input_ub) + np.matmul(cuwn.T, input_lb) + c_ub
+        lb = -1 * (np.matmul(clwp.T, input_ub) + np.matmul(clwn.T, input_lb) + c_lb)
+
+        return lb, ub
 
 
 class Layer:
@@ -87,23 +165,23 @@ class Dense(Layer):
         lweight = np.where(self.weights < 0, self.weights, 0) #Negative weight matrix
 
         #Bounds on affine function
-        self.aff_ub = np.matmul(uweight.T, prev_u) + np.matmul(lweight.T, prev_l) + self.bias
-        self.aff_lb = np.matmul(uweight.T, prev_l) + np.matmul(lweight.T, prev_u) + self.bias
+        self.numeric_aff_ub = np.matmul(uweight.T, prev_u) + np.matmul(lweight.T, prev_l) + self.bias
+        self.numeric_aff_lb = np.matmul(uweight.T, prev_l) + np.matmul(lweight.T, prev_u) + self.bias
 
         #Post-activation bounds on ReLU
-        self.relu_ub = np.maximum(self.aff_ub, 0)
-        self.relu_lb = np.maximum(self.aff_lb, 0)
+        self.numeric_relu_ub = np.maximum(self.numeric_aff_ub, 0)
+        self.numeric_relu_lb = np.maximum(self.numeric_aff_lb, 0)
 
 
 
 class AffineFunction:
 
-    def __init__(self, w = {}, b = 0):
+    def __init__(self, w = [], b = 0):
 
         self.w = {}
-        for key, val in w.items():
+        for i, val in enumerate(w):
             if val != 0:
-                self.w[key] = val
+                self.w[i] = val
 
         self.b = b
 
