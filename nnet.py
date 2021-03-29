@@ -98,17 +98,23 @@ class Sequential:
 
 
 
-    def backwards_pass(self, neuron, input_lb, input_ub):
-
+    def backwards_pass(self, l_num, input_lb, input_ub):
+        """
+        Generate upper and lower numeric bounds on layer affine outputs via a backwards pass over the network
+        :param l_num: layer number on which to develop bounds
+        :param input_lb: lower bounds on input space
+        :param input_ub: upper bounds on input space
+        :return: lb, ub: lower and upper numeric bounds on affine functions for layer
+        """
         #Get current neuron affine functions
-        c_uw = self.layers[neuron].weights #positive for upper bound
-        c_ub = self.layers[neuron].bias
+        c_uw = self.layers[l_num].weights #positive for upper bound
+        c_ub = self.layers[l_num].bias
 
-        c_lw = -self.layers[neuron].weights #negative for lower bound
-        c_lb = -self.layers[neuron].bias
+        c_lw = -self.layers[l_num].weights #negative for lower bound
+        c_lb = -self.layers[l_num].bias
 
         #Iterate backwards over layers
-        for i in range(neuron-1,-1,-1):
+        for i in range(l_num-1,-1,-1):
 
             cuwp = np.where(c_uw > 0, c_uw, 0) #postive weight matrix for upper bound
             cuwn = np.where(c_uw < 0, c_uw, 0) #negative weight matrix for upper bound
