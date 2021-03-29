@@ -76,3 +76,4 @@ def bigMLP(network, input, inf_d, real_class, pred_class, method):
     m.optimize()
 
     return x.X, m.objVal
+

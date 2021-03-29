@@ -28,7 +28,7 @@ class Sequential:
         """
         Generate upper and lower bounds on the affine function within each neuron
 
-        :param method: method for bound propogation, 1 = interval arithmetic
+        :param method: method for bound propogation, 1 = interval arithmetic, 2 = DeepPoly
         :param input: numeric input to verify
         :param distance: l_inf distance around input to consider
         """
@@ -37,14 +37,24 @@ class Sequential:
         input_ub = input + distance
         input_lb = input - distance
 
-        #Generate first layer bounds from
-        self.layers[0].generate_bounds(method, input_lb, input_ub)
+        if method == 1: #Interval arithmetic
+            #Generate first layer bounds from
+            self.layers[0].generate_interval_bounds(method, input_lb, input_ub)
 
-        #Iteratively generate bounds on successive layers
-        for i, layer in enumerate(self.layers[1:],start=1):
-            prev_layer = self.layers[i-1]
-            self.layers[i].generate_bounds(method, prev_layer.relu_lb, prev_layer.relu_ub)
+            #Iteratively generate bounds on successive layers
+            for i, layer in enumerate(self.layers[1:],start=1):
+                prev_layer = self.layers[i-1]
+                self.layers[i].generate_interval_bounds(prev_layer.relu_lb, prev_layer.relu_ub)
 
+        if method == 2: #DeepPoly
+
+            for i, layer in enumerate(self.layers):
+
+
+
+    def backwards_pass(self, neuron):
+
+        pass
 
 
 
@@ -65,26 +75,50 @@ class Dense(Layer):
         self.input_shape = self.weights.shape[0]
         self.output_shape = self.weights.shape[1]
 
-    def generate_bounds(self, method, prev_l, prev_u):
+    def generate_interval_bounds(self, prev_l, prev_u):
         """
-        Generate bounds for the layer given numeric bounds on the previous layer
-        :param method: 1 = Interval Arithmetic
+        Generate bounds for the layer using interval arithmetic given numeric bounds on the previous layer
         :param prev_l: lower bound on previous layer
         :param prev_u: upper bound on previous layer
         """
 
-        if method == 1: #Interval arithmetic
 
-            uweight = np.where(self.weights > 0, self.weights, 0) #Positive weight matrix
-            lweight = np.where(self.weights < 0, self.weights, 0) #Negative weight matrix
+        uweight = np.where(self.weights > 0, self.weights, 0) #Positive weight matrix
+        lweight = np.where(self.weights < 0, self.weights, 0) #Negative weight matrix
 
-            #Bounds on affine function
-            self.aff_ub = np.matmul(uweight.T, prev_u) + np.matmul(lweight.T, prev_l) + self.bias
-            self.aff_lb = np.matmul(uweight.T, prev_l) + np.matmul(lweight.T, prev_u) + self.bias
+        #Bounds on affine function
+        self.aff_ub = np.matmul(uweight.T, prev_u) + np.matmul(lweight.T, prev_l) + self.bias
+        self.aff_lb = np.matmul(uweight.T, prev_l) + np.matmul(lweight.T, prev_u) + self.bias
 
-            #Post-activation bounds on ReLU
-            self.relu_ub = np.maximum(self.aff_ub, 0)
-            self.relu_lb = np.maximum(self.aff_lb, 0)
-
+        #Post-activation bounds on ReLU
+        self.relu_ub = np.maximum(self.aff_ub, 0)
+        self.relu_lb = np.maximum(self.aff_lb, 0)
 
 
+
+class AffineFunction:
+
+    def __init__(self, w = {}, b = 0):
+
+        self.w = {}
+        for key, val in w.items():
+            if val != 0:
+                self.w[key] = val
+
+        self.b = b
+
+    def add(self, func, coeff = 1):
+
+        assert (isinstance(func,AffineFunction))
+        for key, val in func.w:
+            self.w[key] = self.w.get(key,0) + coeff*val
+
+        self.b = self.b + coeff*func.b
+
+    def remove_term(self,i):
+
+        self.w.pop(i)
+
+    def maxindex(self):
+
+        return max(list(self.w.keys()).append(0))
