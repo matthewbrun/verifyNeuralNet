@@ -17,7 +17,7 @@ def bigMLP(network, input, inf_d, real_class, pred_class, method):
     :param real_class: output class of input
     :param pred_class: desired class of adversarial example
     :param method: method for bound propogation, 1 = interval arithmetic
-    :return: adversarial example, objective value
+    :return: objective value, adversarial example
     """
 
     #Create nnet object and generate numeric bounds
@@ -75,5 +75,43 @@ def bigMLP(network, input, inf_d, real_class, pred_class, method):
     m.setParam('OutputFlag', 0)
     m.optimize()
 
-    return x.X, m.objVal
+    return m.objVal, x.X
+
+
+def boundDiff(network, input, inf_d, real_class, pred_class, method):
+    """
+    Solves an LP relaxation of the big M formulation of the ReLU activations in provided network to maximize the
+    difference between desired pred_class and actual real_class of the input within an infinity norm distance of inf_d
+
+    :param network: keras neural network object
+    :param input: numeric input around witch to find adversarial example
+    :param inf_d: infinity norm distance around input to search for example
+    :param real_class: output class of input
+    :param pred_class: desired class of adversarial example
+    :param method: method for bound propogation, 1 = interval arithmetic
+    :return: objective value
+    """
+
+    #Build network
+    n = nnet.Sequential(network)
+
+    #Construct layer with single output equal to pred_class - real_class outputs from network
+    last_output = n.layers[-1].output_shape
+
+    classdiff_weights = np.zeros((last_output,1))
+    classdiff_weights[pred_class, 0] = 1
+    classdiff_weights[real_class, 0] = -1
+
+    classdiff_bias = np.zeros(1,)
+
+    n.addLayer(classdiff_weights, classdiff_bias)
+
+    n.generate_bounds(method, input, inf_d)
+
+    #Extract upper bound on difference layer output
+    ub = n.layers[-1].numeric_aff_ub
+
+    return ub
+
+
 

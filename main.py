@@ -59,6 +59,19 @@ def test_deeppoly_bounds():
         print(layer.numeric_aff_lb)
         print(layer.numeric_aff_ub)
 
+def test_layer_bound_solution():
+
+    m = train_model()
+    inp = np.arange(24)
+    d = .5
+
+    print(vnn.boundDiff(m, inp, d, 0, 1, 1))
+
+    print(vnn.boundDiff(m, inp, d, 0, 1, 2))
+
+
 #test_deeppoly_bounds()
 
-test_LP()
+#test_LP()
+
+test_layer_bound_solution()

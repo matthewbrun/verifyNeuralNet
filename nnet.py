@@ -13,16 +13,19 @@ class Sequential:
         self.input_shape = network.layers[0].get_weights()[0].shape[0]
         self.layers = []
 
-        for i, layer in enumerate(network.layers):
+        for layer in network.layers:
 
             if isinstance(layer, keras.layers.core.Dense):
                 #Add dense ReLU layer to instance
                 assert( layer.activation == keras.activations.relu )
 
                 weights, bias = layer.get_weights()
-                layerclass = Dense(weights, bias, "l"+str(i))
+                self.addLayer(weights, bias)
 
-                self.layers.append(layerclass)
+    def addLayer(self, weights, bias):
+
+        layerclass = Dense(weights, bias, "l" + str(len(self.layers)))
+        self.layers.append(layerclass)
 
     def generate_bounds(self, method, input, distance):
         """
@@ -84,6 +87,9 @@ class Sequential:
 
                             lb_w[:,i] = 0
                             lb_b[i] = 0
+
+                    #Otherwise, L >= 0, active, use default affine function as bounding functions
+
 
                 #Add bounding function parameters to layer object
                 layer.funcw_aff_ub = ub_w
