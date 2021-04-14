@@ -61,42 +61,7 @@ class Sequential:
 
                 #Generate lower and upper bounding affine function for layer
 
-                ub_w = layer.weights #upper bounding weights matrix
-                lb_w = layer.weights #lower bounding weights matrix
-
-                ub_b = layer.bias #upper bounding intercept
-                lb_b = layer.bias #lower bounding intercept
-
-                for i in range(len(U)):
-
-                    #If U <= 0, inactive, set bounding functions to 0
-                    if U[i] <= 0:
-                        ub_w[:,i] = 0
-                        lb_w[:,i] = 0
-
-                        ub_b[i] = 0
-                        lb_b[i] = 0
-
-                    #If U > 0 and L < 0, use DeepPoly bounding functions
-                    elif L[i] < 0:
-
-                        ub_w[:,i] = U[i]/(U[i]-L[i]) * ub_w[:,i]
-                        ub_b[i] = U[i]/(U[i]-L[i]) * (ub_b[i] - L[i])
-
-                        if abs(L[i]) >= abs(U[i]):
-
-                            lb_w[:,i] = 0
-                            lb_b[i] = 0
-
-                    #Otherwise, L >= 0, active, use default affine function as bounding functions
-
-
-                #Add bounding function parameters to layer object
-                layer.funcw_aff_ub = ub_w
-                layer.funcw_aff_lb = lb_w
-
-                layer.funcb_aff_ub = ub_b
-                layer.funcb_aff_lb = lb_b
+                layer.generate_DeepPoly_bounds()
 
 
 
@@ -157,6 +122,8 @@ class Layer:
         self.label = label
 
 
+
+
 class Dense(Layer):
 
     def __init__(self, weights, bias, label):
@@ -183,6 +150,50 @@ class Dense(Layer):
         #Post-activation bounds on ReLU
         self.numeric_relu_ub = np.maximum(self.numeric_aff_ub, 0)
         self.numeric_relu_lb = np.maximum(self.numeric_aff_lb, 0)
+
+    def generate_DeepPoly_bounds(self):
+        """
+        Generate affine bounding functions on neuron layer using the DeepPoly method
+        Requires self.numeric_aff_lb and self.numeric_aff_ub be set to numeric upper and lower bounds on each neruon
+        """
+
+        L = self.numeric_aff_lb
+        U = self.numeric_aff_ub
+
+        ub_w = self.weights  # upper bounding weights matrix
+        lb_w = self.weights  # lower bounding weights matrix
+
+        ub_b = self.bias  # upper bounding intercept
+        lb_b = self.bias  # lower bounding intercept
+
+        for i in range(len(U)):
+
+            # If U <= 0, inactive, set bounding functions to 0
+            if U[i] <= 0:
+                ub_w[:, i] = 0
+                lb_w[:, i] = 0
+
+                ub_b[i] = 0
+                lb_b[i] = 0
+
+            # If U > 0 and L < 0, use DeepPoly bounding functions
+            elif L[i] < 0:
+
+                ub_w[:, i] = U[i] / (U[i] - L[i]) * ub_w[:, i]
+                ub_b[i] = U[i] / (U[i] - L[i]) * (ub_b[i] - L[i])
+
+                if abs(L[i]) >= abs(U[i]):
+                    lb_w[:, i] = 0
+                    lb_b[i] = 0
+
+            # Otherwise, L >= 0, active, use default affine function as bounding functions
+
+        # Add bounding function parameters to layer object
+        self.funcw_aff_ub = ub_w
+        self.funcw_aff_lb = lb_w
+
+        self.funcb_aff_ub = ub_b
+        self.funcb_aff_lb = lb_b
 
 
 
