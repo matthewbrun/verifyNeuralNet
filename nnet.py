@@ -50,10 +50,15 @@ class Sequential:
                 self.layers[i].generate_interval_bounds(prev_layer.numeric_relu_lb, prev_layer.numeric_relu_ub)
 
         if method == 2: #DeepPoly
+
+            aff_lbs = []
+            aff_ubs = []
+
             # Iteratively generate bounds on successive layers
+
             for i, layer in enumerate(self.layers):
                 #Generate lower and upper bounds from a backwards pass
-                L, U = self.backwards_pass(i, input_lb, input_ub)
+                L, U = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
 
                 #Set layer numeric lower and upper affine bounds
                 layer.numeric_aff_ub = U
@@ -62,6 +67,8 @@ class Sequential:
                 #Generate lower and upper bounding affine function for layer
 
                 layer.generate_DeepPoly_bounds()
+                aff_lbs.append( (layer.funcw_aff_lb, layer.funcb_aff_lb) )
+                aff_ubs.append( (layer.funcw_aff_ub, layer.funcb_aff_ub) )
 
 
 
@@ -69,10 +76,12 @@ class Sequential:
 
 
 
-    def backwards_pass(self, l_num, input_lb, input_ub):
+    def backwards_pass(self, l_num, aff_lbs, aff_ubs, input_lb, input_ub):
         """
         Generate upper and lower numeric bounds on layer affine outputs via a backwards pass over the network
         :param l_num: layer number on which to develop bounds
+        :param aff_lbs: list of affine lower bounds on each preceeding layer, affine function defined by (weights, biases)
+        :param aff_ubs: list of affine upper bounds on each preceeding layer, affine function defined by (weights, biases)
         :param input_lb: lower bounds on input space
         :param input_ub: upper bounds on input space
         :return: lb, ub: lower and upper numeric bounds on affine functions for layer
@@ -94,11 +103,11 @@ class Sequential:
             clwn = np.where(c_lw < 0, c_lw, 0) #negative weight matrix for lower bound
 
             #Transform weights/bias backwards through layer by taking affine composite
-            c_uw = np.matmul(self.layers[i].funcw_aff_ub, cuwp) + np.matmul(self.layers[i].funcw_aff_lb, cuwn)
-            c_lw = np.matmul(self.layers[i].funcw_aff_ub, clwp) + np.matmul(self.layers[i].funcw_aff_lb, clwn)
+            c_uw = np.matmul(aff_ubs[i][0], cuwp) + np.matmul(aff_lbs[i][0], cuwn)
+            c_lw = np.matmul(aff_ubs[i][0], clwp) + np.matmul(aff_lbs[i][0], clwn)
 
-            c_ub = c_ub + np.matmul(self.layers[i].funcb_aff_ub, cuwp) + np.matmul(self.layers[i].funcb_aff_lb, cuwn)
-            c_lb = c_lb + np.matmul(self.layers[i].funcb_aff_ub, clwp) + np.matmul(self.layers[i].funcb_aff_lb, clwn)
+            c_ub = c_ub + np.matmul(aff_ubs[i][1], cuwp) + np.matmul(aff_lbs[i][1], cuwn)
+            c_lb = c_lb + np.matmul(aff_ubs[i][1], clwp) + np.matmul(aff_lbs[i][1], clwn)
 
         #Maximize upper/lower bound over input space
         cuwp = np.where(c_uw > 0, c_uw, 0)
