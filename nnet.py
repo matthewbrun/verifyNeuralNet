@@ -81,15 +81,16 @@ class Sequential:
 
                 L, U, x_lb, x_ub, top_lbs, top_ubs = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
 
-                self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub)
+                z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub)
 
+                #TODO: Complete this:  build new aff_lbs/aff_ubs to input to backwards_pass
+                #loop over all preceeding layers?
 
-                #TODO: Complete this
-
+                L_alt, U_alt, *__ = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
 
                 #Set layer numeric lower and upper affine bounds
-                layer.numeric_aff_ub = U
-                layer.numeric_aff_lb = L
+                layer.numeric_aff_ub = min(U, U_alt)
+                layer.numeric_aff_lb = min(L, L_alt)
 
                 #Generate lower and upper bounding affine function for layer
 
@@ -166,6 +167,8 @@ class Sequential:
         x_lb = np.where(c_lw.T > 0, input_ub, input_lb).T
 
         return lb, ub, x_lb, x_ub, top_lbs, top_ubs
+
+
 
     def forwards_pass(self, l_num, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub):
         """
@@ -292,6 +295,22 @@ class Dense(Layer):
 
         self.funcb_aff_ub = ub_b
         self.funcb_aff_lb = lb_b
+
+    def most_violated_inequality(self, prev_l, prev_u, prev_z_lb, prev_z_ub):
+        """
+        Finds the affine representation of the most violated inequality from the convex relaxation
+        :param prev_l: numeric lower bounds on the previous layer
+        :param prev_u: numeric upper bounds on the previous layer
+        :param prev_z_lb: lower bound solution for each present layer neuron, from the previous layer
+        :param prev_z_ub: upper bound solution for each present layer neuron, from the previous layer
+        :return: ???
+        """
+        #need numeric bounds on previous layer, solution in previous layer
+
+        #remember to use negative affine function for lower bounds
+
+
+        pass
 
 
 
