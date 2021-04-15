@@ -65,9 +65,11 @@ def test_layer_bound_solution():
     inp = np.arange(24)
     d = .5
 
-    print(vnn.boundDiff(m, inp, d, 0, 1, 1))
+    #print(vnn.boundDiff(m, inp, d, 0, 1, 1))
 
-    print(vnn.boundDiff(m, inp, d, 0, 1, 2))
+    #print(vnn.boundDiff(m, inp, d, 0, 1, 2))
+
+    print(vnn.boundDiff(m, inp, d, 0, 1, 3))
 
 
 #test_deeppoly_bounds()

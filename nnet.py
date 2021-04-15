@@ -31,7 +31,7 @@ class Sequential:
         """
         Generate upper and lower bounds on the affine function within each neuron
 
-        :param method: method for bound propogation, 1 = interval arithmetic, 2 = DeepPoly
+        :param method: method for bound propogation, 1 = interval arithmetic, 2 = DeepPoly, 3 = FastC2V
         :param input: numeric input to verify
         :param distance: l_inf distance around input to consider
         """
@@ -51,6 +51,7 @@ class Sequential:
 
         if method == 2: #DeepPoly
 
+            #Keep affine bounding functions from previous layers in the form (weights, biases)
             aff_lbs = []
             aff_ubs = []
 
@@ -58,7 +59,33 @@ class Sequential:
 
             for i, layer in enumerate(self.layers):
                 #Generate lower and upper bounds from a backwards pass
-                L, U = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
+                L, U, *__ = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
+
+                #Set layer numeric lower and upper affine bounds
+                layer.numeric_aff_ub = U
+                layer.numeric_aff_lb = L
+
+                #Generate lower and upper bounding affine function for layer
+
+                layer.generate_DeepPoly_bounds()
+                aff_lbs.append( (layer.funcw_aff_lb, layer.funcb_aff_lb) )
+                aff_ubs.append( (layer.funcw_aff_ub, layer.funcb_aff_ub) )
+
+        if method == 3: #FastC2V
+
+            aff_lbs = []
+            aff_ubs = []
+
+
+            for i, layer in enumerate(self.layers):
+
+                L, U, x_lb, x_ub, top_lbs, top_ubs = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
+
+                self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub)
+
+
+                #TODO: Complete this
+
 
                 #Set layer numeric lower and upper affine bounds
                 layer.numeric_aff_ub = U
@@ -76,6 +103,10 @@ class Sequential:
 
 
 
+
+
+
+
     def backwards_pass(self, l_num, aff_lbs, aff_ubs, input_lb, input_ub):
         """
         Generate upper and lower numeric bounds on layer affine outputs via a backwards pass over the network
@@ -85,7 +116,14 @@ class Sequential:
         :param input_lb: lower bounds on input space
         :param input_ub: upper bounds on input space
         :return: lb, ub: lower and upper numeric bounds on affine functions for layer
+                x_lb, x_ub: feasible input points for lower and upper bounds at each neron in the layer
+                top_lbs, top_ubs: boolean indicator of whether upper bounds were taken at each neuron (layer neurons down columns, input neurons on rows)
         """
+
+        #Track if upper bounds are taken in back propogation
+        top_lbs = []
+        top_ubs = []
+
         #Get current neuron affine functions
         c_uw = self.layers[l_num].weights #positive for upper bound
         c_ub = self.layers[l_num].bias
@@ -95,6 +133,10 @@ class Sequential:
 
         #Iterate backwards over layers
         for i in range(l_num-1,-1,-1):
+
+            #Add upper bound indicators for current layer
+            top_ubs.insert(0, c_uw > 0)
+            top_lbs.insert(0, c_lw > 0)
 
             cuwp = np.where(c_uw > 0, c_uw, 0) #postive weight matrix for upper bound
             cuwn = np.where(c_uw < 0, c_uw, 0) #negative weight matrix for upper bound
@@ -119,7 +161,54 @@ class Sequential:
         ub = np.matmul(cuwp.T, input_ub) + np.matmul(cuwn.T, input_lb) + c_ub
         lb = -1 * (np.matmul(clwp.T, input_ub) + np.matmul(clwn.T, input_lb) + c_lb)
 
-        return lb, ub
+        #Generate feasible solution for upper and lower bounds
+        x_ub = np.where(c_uw.T > 0, input_ub, input_lb).T #neuron in columns, x indices across rows
+        x_lb = np.where(c_lw.T > 0, input_ub, input_lb).T
+
+        return lb, ub, x_lb, x_ub, top_lbs, top_ubs
+
+    def forwards_pass(self, l_num, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub):
+        """
+        Generates a full solution for preceeding layers using a forward pass, based on results from backward propogation
+        :param l_num: layer number to which the forward pass is done
+        :param aff_lbs: list of affine lower bounds on each preceeding layer, affine function defined by (weights, biases)
+        :param aff_ubs: list of affine upper bounds on each preceeding layer, affine function defined by (weights, biases)
+        :param top_lbs: list of boolean indicator of whether upper bounds were taken at each neuron within preceeding layers,
+                        for each neuron in the current layer on the lower bound solution (list index for previous layer number,
+                        rows of matrix for previous layer neurons, columns of matrix for present layer neurons)
+        :param top_ubs: list of boolean indicator of whether upper bounds were taken at each neuron within preceeding layers,
+                        for each neuron in the current layer on the upper bound solution
+        :param x_lb: feasible input to generate layer's lower bound
+        :param x_ub: feasible input to generate later's upper bound
+        :return: z_lb, z_ub: lists of matrices with upper bound and lower bound solutions for each layer neuron (columns)
+                            at preceeding layer (list index) neurons (row)
+        """
+
+        z_lb = [x_lb]
+        z_ub = [x_ub]
+
+        prev_lb = x_lb
+        prev_ub = x_ub
+
+        for i in range(l_num):
+
+            next_z_lb = np.matmul(aff_lbs[i][0].T, prev_lb) * (1 - top_lbs[i]) + np.matmul(aff_ubs[i][0].T, prev_lb) * top_lbs[i]
+            next_z_ub = np.matmul(aff_lbs[i][0].T, prev_ub) * (1 - top_ubs[i]) + np.matmul(aff_ubs[i][0].T, prev_lb) * top_lbs[i]
+
+            z_lb.append(next_z_lb)
+            z_ub.append(next_z_ub)
+
+            prev_lb = next_z_lb
+            prev_ub = next_z_ub
+
+            # print("Iter " + str(i))
+            # print(prev_lb.shape)
+            # print(top_lbs[i].shape)
+            # print(aff_lbs[i][0].shape)
+
+        return z_lb, z_ub
+
+
 
 
 class Layer:
