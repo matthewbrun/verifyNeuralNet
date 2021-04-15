@@ -86,11 +86,12 @@ class Sequential:
                 #TODO: Complete this:  build new aff_lbs/aff_ubs to input to backwards_pass
                 #loop over all preceeding layers?
 
-                L_alt, U_alt, *__ = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
-
+                #L_alt, U_alt, *__ = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
+                U_alt = U
+                L_alt = L
                 #Set layer numeric lower and upper affine bounds
-                layer.numeric_aff_ub = min(U, U_alt)
-                layer.numeric_aff_lb = min(L, L_alt)
+                layer.numeric_aff_ub = np.minimum(U, U_alt)
+                layer.numeric_aff_lb = np.minimum(L, L_alt)
 
                 #Generate lower and upper bounding affine function for layer
 
@@ -193,10 +194,13 @@ class Sequential:
         prev_lb = x_lb
         prev_ub = x_ub
 
-        for i in range(l_num):
+        n_neur = self.layers[l_num].output_shape
 
-            next_z_lb = np.matmul(aff_lbs[i][0].T, prev_lb) * (1 - top_lbs[i]) + np.matmul(aff_ubs[i][0].T, prev_lb) * top_lbs[i]
-            next_z_ub = np.matmul(aff_lbs[i][0].T, prev_ub) * (1 - top_ubs[i]) + np.matmul(aff_ubs[i][0].T, prev_lb) * top_lbs[i]
+        for i in range(l_num):
+            next_z_lb = np.matmul(aff_lbs[i][0].T, prev_lb) * (1 - top_lbs[i]) + np.matmul(aff_ubs[i][0].T, prev_lb) * top_lbs[i] + \
+                np.tile(np.reshape(aff_lbs[i][1], (-1,1)), (1,n_neur)) * (1 - top_lbs[i]) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur)) * top_lbs[i]
+            next_z_ub = np.matmul(aff_lbs[i][0].T, prev_ub) * (1 - top_ubs[i]) + np.matmul(aff_ubs[i][0].T, prev_lb) * top_lbs[i] + \
+                np.tile(np.reshape(aff_lbs[i][1], (-1,1)), (1,n_neur)) * (1 - top_lbs[i]) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur)) * top_lbs[i]
 
             z_lb.append(next_z_lb)
             z_ub.append(next_z_ub)
