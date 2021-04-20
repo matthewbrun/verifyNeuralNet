@@ -63,11 +63,14 @@ def test_layer_bound_solution():
 
     m = train_model()
     inp = np.arange(24)
+
+    out = m.predict(np.array([inp]))
     d = .5
 
-    #print(vnn.boundDiff(m, inp, d, 0, 1, 1))
+    print(out[0][1]-out[0][0])
+    print(vnn.boundDiff(m, inp, d, 0, 1, 1))
 
-    #print(vnn.boundDiff(m, inp, d, 0, 1, 2))
+    print(vnn.boundDiff(m, inp, d, 0, 1, 2))
 
     print(vnn.boundDiff(m, inp, d, 0, 1, 3))
 

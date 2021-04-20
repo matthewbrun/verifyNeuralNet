@@ -1,6 +1,7 @@
 import numpy as np
 import keras
 
+#TODO: reduce use of np.copy - only necessary when resulting object edited
 
 class Sequential:
 
@@ -47,7 +48,7 @@ class Sequential:
             #Iteratively generate bounds on successive layers
             for i, layer in enumerate(self.layers[1:],start=1):
                 prev_layer = self.layers[i-1]
-                self.layers[i].generate_interval_bounds(prev_layer.numeric_relu_lb, prev_layer.numeric_relu_ub)
+                self.layers[i].generate_interval_bounds(np.copy(prev_layer.numeric_relu_lb), np.copy(prev_layer.numeric_relu_ub))
 
         if method == 2: #DeepPoly
 
@@ -68,8 +69,8 @@ class Sequential:
                 #Generate lower and upper bounding affine function for layer
 
                 layer.generate_DeepPoly_bounds()
-                aff_lbs.append( (layer.funcw_aff_lb, layer.funcb_aff_lb) )
-                aff_ubs.append( (layer.funcw_aff_ub, layer.funcb_aff_ub) )
+                aff_lbs.append( [np.copy(layer.funcw_aff_lb), np.copy(layer.funcb_aff_lb)] )
+                aff_ubs.append( [np.copy(layer.funcw_aff_ub), np.copy(layer.funcb_aff_ub)] )
 
         if method == 3: #FastC2V
 
@@ -87,14 +88,16 @@ class Sequential:
                 z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub)
 
 
-                #This is inefficient - backwards pass computes both lower and upper bounds, only one is used
-                #Additionally, is it possible to vectorize these computations?
+                #This is inefficient: loops over each neuron in layer
+                #is it possible to vectorize these computations?
 
                 #Generate new tightened numeric bounds at each neuron in present layer
                 for j in range(layer.output_shape):
-
-                    new_aff_ubs_lb = aff_ubs #replaced affine upper bounds for neuron lower bound
-                    new_aff_ubs_ub = aff_ubs  # replaced affine upper bounds for neuron upper bound
+                    new_aff_ubs_lb = []
+                    new_aff_ubs_ub = []
+                    for item in aff_ubs:
+                        new_aff_ubs_lb.append( [np.copy(item[0]), np.copy(item[1])] ) #replaced affine upper bounds for neuron lower bound
+                        new_aff_ubs_ub.append( [np.copy(item[0]), np.copy(item[1])] )  # replaced affine upper bounds for neuron upper bound
 
                     #Track numeric bounds on previous layer
                     prev_l = input_lb
@@ -109,16 +112,23 @@ class Sequential:
                         new_aff_ub, viol_ub = tighten_layer.most_violated_inequality(j, prev_l, prev_u, z_ub[k][:,j], z_ub[k + 1][:,j]) #ub
 
                         #If the inequalities are violated, replace for this neuron
-                        if viol_lb > 0:
-                            new_aff_ubs_lb[k] = new_aff_lb
-                        if viol_ub > 0:
-                            new_aff_ubs_ub[k] = new_aff_ub
+                        new_aff_ubs_lb[k][0] = np.where(viol_lb > 0, new_aff_lb[0], new_aff_ubs_lb[k][0])
+                        new_aff_ubs_ub[k][0] = np.where(viol_ub > 0, new_aff_ub[0], new_aff_ubs_lb[k][0])
+
+                        new_aff_ubs_lb[k][1] = np.where(viol_lb > 0, new_aff_lb[1], new_aff_ubs_lb[k][1])
+                        new_aff_ubs_ub[k][1] = np.where(viol_ub > 0, new_aff_ub[1], new_aff_ubs_lb[k][1])
+
+                        # if viol_lb > 0:
+                        #     new_aff_ubs_lb[k] = new_aff_lb
+                        # if viol_ub > 0:
+                        #     new_aff_ubs_ub[k] = new_aff_ub
 
                         #Update numeric bounds for next layer
-                        prev_l = tighten_layer.numeric_relu_lb  #TODO: should these be RELU activated?
-                        prev_u = tighten_layer.numeric_relu_ub
+                        prev_l = np.copy(tighten_layer.numeric_aff_lb)  #TODO: should these be RELU activated?
+                        prev_u = np.copy(tighten_layer.numeric_aff_ub)
 
                     #This is inefficient: only need backwards pass to a single neuron in the last layer, not all neurons
+                    #Also, only need lower or upper bound at a time, not both
 
                     #Repeat backwards pass with new affine bounds for current neuron
                     Lj_new, *__ = self.backwards_pass(i, aff_lbs, new_aff_ubs_lb, input_lb, input_ub)
@@ -135,8 +145,8 @@ class Sequential:
                 #Generate lower and upper bounding affine function for layer
 
                 layer.generate_DeepPoly_bounds()
-                aff_lbs.append( (layer.funcw_aff_lb, layer.funcb_aff_lb) )
-                aff_ubs.append( (layer.funcw_aff_ub, layer.funcb_aff_ub) )
+                aff_lbs.append( [np.copy(layer.funcw_aff_lb), np.copy(layer.funcb_aff_lb)] )
+                aff_ubs.append( [np.copy(layer.funcw_aff_ub), np.copy(layer.funcb_aff_ub)] )
 
 
 
@@ -166,11 +176,11 @@ class Sequential:
         top_ubs = []
 
         #Get current neuron affine functions
-        c_uw = self.layers[l_num].weights #positive for upper bound
-        c_ub = self.layers[l_num].bias
+        c_uw = np.copy(self.layers[l_num].weights) #positive for upper bound
+        c_ub = np.copy(self.layers[l_num].bias)
 
-        c_lw = -self.layers[l_num].weights #negative for lower bound
-        c_lb = -self.layers[l_num].bias
+        c_lw = -np.copy(self.layers[l_num].weights) #negative for lower bound
+        c_lb = -np.copy(self.layers[l_num].bias)
 
         #Iterate backwards over layers
         for i in range(l_num-1,-1,-1):
@@ -311,19 +321,19 @@ class Dense(Layer):
         Requires self.numeric_aff_lb and self.numeric_aff_ub be set to numeric upper and lower bounds on each neruon
         """
 
-        L = self.numeric_aff_lb
-        U = self.numeric_aff_ub
+        L = np.copy(self.numeric_aff_lb)
+        U = np.copy(self.numeric_aff_ub)
 
         #TODO: delete?
         #Post-activation bounds on ReLU
         self.numeric_relu_ub = np.maximum(self.numeric_aff_ub, 0)
         self.numeric_relu_lb = np.maximum(self.numeric_aff_lb, 0)
 
-        ub_w = self.weights  # upper bounding weights matrix
-        lb_w = self.weights  # lower bounding weights matrix
+        ub_w = np.copy(self.weights)  # upper bounding weights matrix
+        lb_w = np.copy(self.weights)  # lower bounding weights matrix
 
-        ub_b = self.bias  # upper bounding intercept
-        lb_b = self.bias  # lower bounding intercept
+        ub_b = np.copy(self.bias)  # upper bounding intercept
+        lb_b = np.copy(self.bias)  # lower bounding intercept
 
         for i in range(len(U)):
 
@@ -370,19 +380,72 @@ class Dense(Layer):
 
         #remember to use negative affine function for lower bounds
 
-        aff_w = self.funcw_aff_ub
-        aff_b = self.funcb_aff_ub
-        v = 1
+        # aff_w = self.funcw_aff_ub
+        # aff_b = self.funcb_aff_ub
+        # v = np.ones((self.output_shape))
+        #
+        # aff_fun = [aff_w, aff_b]
+        # return aff_fun, v
 
-        aff_fun = (aff_w, aff_b)
+        aff_w = np.zeros(self.funcw_aff_ub.shape)
+        aff_b = np.zeros(self.funcb_aff_ub.shape)
+
+        v = np.zeros((self.output_shape))
+
+
+        for i in range(self.output_shape):
+
+            neur_weight = np.copy(self.weights[:,i])
+            neur_bias = np.copy(self.bias[i])
+
+            Lhat = np.where(neur_weight >= 0, prev_l, prev_u)
+            Uhat = np.where(neur_weight >= 0, prev_u, prev_l)
+
+            diffhat = Uhat - Lhat
+
+            value = np.divide(prev_z - Lhat, diffhat)
+
+            indsort = np.argsort(value)
+
+            l_N = np.sum(neur_weight * Lhat) + neur_bias
+
+            if l_N >= 0:
+                # TODO: confirm check feasibility: l([n]) > 0?
+                aff_w[:,i] = neur_weight
+                aff_b[i] = neur_bias
+
+            else:
+
+                l_I = np.sum(neur_weight * Uhat) + neur_bias
+
+                j = -1
+
+                while l_I > 0:
+                    j = j + 1
+                    l_I = l_I - neur_weight[indsort[j]] * diffhat[indsort[j]]
+
+
+                h = indsort[j]
+                I = indsort[0:(j)]
+
+                l_I = np.sum(neur_weight * Uhat) + neur_bias - np.sum(neur_weight[I] * diffhat[I])
+
+                aff_w[I,i] = neur_weight[I]
+                aff_w[h,i] = l_I / diffhat[h]
+
+                aff_b[i] = -(np.sum(neur_weight[I]*Lhat[I]) + l_I*Lhat[h]/diffhat[h])
+
+            v[i] = curr_z[i] - (np.matmul(aff_w[:,i].T, prev_z) + aff_b[i])
+
+        aff_fun = [aff_w, aff_b]
+
         return aff_fun, v
 
-        pass
 
 
 
 class AffineFunction:
-
+    # TODO: remove?
     def __init__(self, w = [], b = 0):
 
         self.w = {}
