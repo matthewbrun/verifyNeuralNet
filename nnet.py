@@ -73,6 +73,7 @@ class Sequential:
 
         if method == 3: #FastC2V
 
+            #Keep affine bounding functions from previous layers in the form (weights, biases)
             aff_lbs = []
             aff_ubs = []
 
@@ -85,16 +86,51 @@ class Sequential:
                 #Find solution from backwards pass data
                 z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub)
 
-                #TODO: Complete this:  build new aff_lbs/aff_ubs to input to backwards_pass
-                #loop over all preceeding layers?
 
-                #L_alt, U_alt, *__ = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
-                U_alt = U
-                L_alt = L
+                #This is inefficient - backwards pass computes both lower and upper bounds, only one is used
+                #Additionally, is it possible to vectorize these computations?
+
+                #Generate new tightened numeric bounds at each neuron in present layer
+                for j in range(layer.output_shape):
+
+                    new_aff_ubs_lb = aff_ubs #replaced affine upper bounds for neuron lower bound
+                    new_aff_ubs_ub = aff_ubs  # replaced affine upper bounds for neuron upper bound
+
+                    #Track numeric bounds on previous layer
+                    prev_l = input_lb
+                    prev_u = input_ub
+
+                    #Tighten bounds on each preceeding layer
+                    for k, tighten_layer in enumerate(self.layers[0:i]):
+
+                        #Find most violated inequalities given solution for fixed neuron and lower/upper bounded solutions
+                        new_aff_lb, viol_lb = tighten_layer.most_violated_inequality(j, prev_l, prev_u, z_lb[k][:,j], z_lb[k+1][:,j]) #lb
+
+                        new_aff_ub, viol_ub = tighten_layer.most_violated_inequality(j, prev_l, prev_u, z_ub[k][:,j], z_ub[k + 1][:,j]) #ub
+
+                        #If the inequalities are violated, replace for this neuron
+                        if viol_lb > 0:
+                            new_aff_ubs_lb[k] = new_aff_lb
+                        if viol_ub > 0:
+                            new_aff_ubs_ub[k] = new_aff_ub
+
+                        #Update numeric bounds for next layer
+                        prev_l = tighten_layer.numeric_relu_lb  #TODO: should these be RELU activated?
+                        prev_u = tighten_layer.numeric_relu_ub
+
+                    #This is inefficient: only need backwards pass to a single neuron in the last layer, not all neurons
+
+                    #Repeat backwards pass with new affine bounds for current neuron
+                    Lj_new, *__ = self.backwards_pass(i, aff_lbs, new_aff_ubs_lb, input_lb, input_ub)
+                    __, Uj_new, *__ = self.backwards_pass(i, aff_lbs, new_aff_ubs_ub, input_lb, input_ub)
+
+                    #Replace numeric bounds at current neuron if improved
+                    L[j] = max(Lj_new[j], L[j])
+                    U[j] = min(Uj_new[j], U[j])
 
                 #Set layer numeric lower and upper affine bounds
-                layer.numeric_aff_ub = np.minimum(U, U_alt)
-                layer.numeric_aff_lb = np.minimum(L, L_alt)
+                layer.numeric_aff_ub = U
+                layer.numeric_aff_lb = L
 
                 #Generate lower and upper bounding affine function for layer
 
@@ -204,14 +240,14 @@ class Sequential:
 
         #Forwards pass over preceeding layers
         for i in range(l_num):
-            
+
             #Take lower bounding affine transformation on previous layer solution if upper bound not used,
             # otherwise take upper bounding affine transformation to get solution in next layer
 
             next_z_lb = (np.matmul(aff_lbs[i][0].T, prev_lb) + np.tile(np.reshape(aff_lbs[i][1], (-1,1)), (1,n_neur))) * (1 - top_lbs[i]) + \
                         (np.matmul(aff_ubs[i][0].T, prev_lb) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur))) * top_lbs[i]
             next_z_ub = (np.matmul(aff_lbs[i][0].T, prev_ub) + np.tile(np.reshape(aff_lbs[i][1], (-1,1)), (1,n_neur))) * (1 - top_ubs[i]) + \
-                        (np.matmul(aff_ubs[i][0].T, prev_lb) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur))) * top_lbs[i]
+                        (np.matmul(aff_ubs[i][0].T, prev_lb) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur))) * top_ubs[i]
 
             #Add layer solution to z vector
             z_lb.append(next_z_lb)
@@ -278,6 +314,11 @@ class Dense(Layer):
         L = self.numeric_aff_lb
         U = self.numeric_aff_ub
 
+        #TODO: delete?
+        #Post-activation bounds on ReLU
+        self.numeric_relu_ub = np.maximum(self.numeric_aff_ub, 0)
+        self.numeric_relu_lb = np.maximum(self.numeric_aff_lb, 0)
+
         ub_w = self.weights  # upper bounding weights matrix
         lb_w = self.weights  # lower bounding weights matrix
 
@@ -313,19 +354,28 @@ class Dense(Layer):
         self.funcb_aff_ub = ub_b
         self.funcb_aff_lb = lb_b
 
-    def most_violated_inequality(self, prev_l, prev_u, prev_z_lb, prev_z_ub):
+    def most_violated_inequality(self, neur, prev_l, prev_u, prev_z, curr_z):
         """
-        Finds the affine representation of the most violated inequality from the convex relaxation
+        Finds the affine representation of the most violated inequality from the convex relaxation for a neuron
+        :param neur: neuron index number to tighten
         :param prev_l: numeric lower bounds on the previous layer
         :param prev_u: numeric upper bounds on the previous layer
-        :param prev_z_lb: lower bound solution for each present layer neuron, from the previous layer
-        :param prev_z_ub: upper bound solution for each present layer neuron, from the previous layer
-        :return: ???
+        :param prev_z: forward pass solution in the previous layer for neuron
+        :param curr_z: output of neuron
+        :return: aff_fun, v = affine inequality function (weights, bias), violation
         """
         #need numeric bounds on previous layer, solution in previous layer
 
+        #need information about layer output (x for layer) to determine violation?
+
         #remember to use negative affine function for lower bounds
 
+        aff_w = self.funcw_aff_ub
+        aff_b = self.funcb_aff_ub
+        v = 1
+
+        aff_fun = (aff_w, aff_b)
+        return aff_fun, v
 
         pass
 
