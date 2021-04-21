@@ -113,19 +113,14 @@ class Sequential:
 
                         #If the inequalities are violated, replace for this neuron
                         new_aff_ubs_lb[k][0] = np.where(viol_lb > 0, new_aff_lb[0], new_aff_ubs_lb[k][0])
-                        new_aff_ubs_ub[k][0] = np.where(viol_ub > 0, new_aff_ub[0], new_aff_ubs_lb[k][0])
+                        new_aff_ubs_ub[k][0] = np.where(viol_ub > 0, new_aff_ub[0], new_aff_ubs_ub[k][0])
 
                         new_aff_ubs_lb[k][1] = np.where(viol_lb > 0, new_aff_lb[1], new_aff_ubs_lb[k][1])
-                        new_aff_ubs_ub[k][1] = np.where(viol_ub > 0, new_aff_ub[1], new_aff_ubs_lb[k][1])
-
-                        # if viol_lb > 0:
-                        #     new_aff_ubs_lb[k] = new_aff_lb
-                        # if viol_ub > 0:
-                        #     new_aff_ubs_ub[k] = new_aff_ub
+                        new_aff_ubs_ub[k][1] = np.where(viol_ub > 0, new_aff_ub[1], new_aff_ubs_ub[k][1])
 
                         #Update numeric bounds for next layer
-                        prev_l = np.copy(tighten_layer.numeric_aff_lb)  #TODO: should these be RELU activated?
-                        prev_u = np.copy(tighten_layer.numeric_aff_ub)
+                        prev_l = np.copy(tighten_layer.numeric_relu_lb)  #TODO: should these be RELU activated?
+                        prev_u = np.copy(tighten_layer.numeric_relu_ub)
 
                     #This is inefficient: only need backwards pass to a single neuron in the last layer, not all neurons
                     #Also, only need lower or upper bound at a time, not both
@@ -403,6 +398,7 @@ class Dense(Layer):
 
             diffhat = Uhat - Lhat
 
+            #TODO: supress or avoid zero division runtime warning
             value = np.divide(prev_z - Lhat, diffhat)
 
             indsort = np.argsort(value)
@@ -410,9 +406,14 @@ class Dense(Layer):
             l_N = np.sum(neur_weight * Lhat) + neur_bias
 
             if l_N >= 0:
-                # TODO: confirm check feasibility: l([n]) > 0?
-                aff_w[:,i] = neur_weight
-                aff_b[i] = neur_bias
+                # TODO: confirm check feasibility: l([n]) >= 0?
+                #aff_w[:,i] = neur_weight
+                #aff_b[i] = neur_bias
+                aff_w[:,i] = np.copy(self.funcw_aff_ub[:,i])
+                aff_b[i] = np.copy(self.funcb_aff_ub[i])
+
+            elif np.sum(neur_weight * Uhat) + neur_bias < 0:
+                pass
 
             else:
 
@@ -420,7 +421,7 @@ class Dense(Layer):
 
                 j = -1
 
-                while l_I > 0:
+                while l_I >= 0:
                     j = j + 1
                     l_I = l_I - neur_weight[indsort[j]] * diffhat[indsort[j]]
 
@@ -429,6 +430,10 @@ class Dense(Layer):
                 I = indsort[0:(j)]
 
                 l_I = np.sum(neur_weight * Uhat) + neur_bias - np.sum(neur_weight[I] * diffhat[I])
+
+                #TODO: remove if unnecessary
+                assert (l_I >= 0)
+                assert (l_I - neur_weight[h]*diffhat[h] < 0)
 
                 aff_w[I,i] = neur_weight[I]
                 aff_w[h,i] = l_I / diffhat[h]
