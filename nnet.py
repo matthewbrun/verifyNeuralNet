@@ -107,9 +107,9 @@ class Sequential:
                     for k, tighten_layer in enumerate(self.layers[0:i]):
 
                         #Find most violated inequalities given solution for fixed neuron and lower/upper bounded solutions
-                        new_aff_lb, viol_lb = tighten_layer.most_violated_inequality(j, prev_l, prev_u, z_lb[k][:,j], z_lb[k+1][:,j]) #lb
+                        new_aff_lb, viol_lb = tighten_layer.most_violated_inequality(prev_l, prev_u, z_lb[k][:,j], z_lb[k+1][:,j]) #lb
 
-                        new_aff_ub, viol_ub = tighten_layer.most_violated_inequality(j, prev_l, prev_u, z_ub[k][:,j], z_ub[k + 1][:,j]) #ub
+                        new_aff_ub, viol_ub = tighten_layer.most_violated_inequality(prev_l, prev_u, z_ub[k][:,j], z_ub[k + 1][:,j]) #ub
 
                         #If the inequalities are violated, replace for this neuron
                         new_aff_ubs_lb[k][0] = np.where(viol_lb > 0, new_aff_lb[0], new_aff_ubs_lb[k][0])
@@ -119,7 +119,7 @@ class Sequential:
                         new_aff_ubs_ub[k][1] = np.where(viol_ub > 0, new_aff_ub[1], new_aff_ubs_ub[k][1])
 
                         #Update numeric bounds for next layer
-                        prev_l = np.copy(tighten_layer.numeric_relu_lb)  #TODO: should these be RELU activated?
+                        prev_l = np.copy(tighten_layer.numeric_relu_lb)
                         prev_u = np.copy(tighten_layer.numeric_relu_ub)
 
                     #This is inefficient: only need backwards pass to a single neuron in the last layer, not all neurons
@@ -319,7 +319,6 @@ class Dense(Layer):
         L = np.copy(self.numeric_aff_lb)
         U = np.copy(self.numeric_aff_ub)
 
-        #TODO: delete?
         #Post-activation bounds on ReLU
         self.numeric_relu_ub = np.maximum(self.numeric_aff_ub, 0)
         self.numeric_relu_lb = np.maximum(self.numeric_aff_lb, 0)
@@ -359,87 +358,84 @@ class Dense(Layer):
         self.funcb_aff_ub = ub_b
         self.funcb_aff_lb = lb_b
 
-    def most_violated_inequality(self, neur, prev_l, prev_u, prev_z, curr_z):
+    def most_violated_inequality(self, prev_l, prev_u, prev_z, curr_z):
         """
         Finds the affine representation of the most violated inequality from the convex relaxation for a neuron
-        :param neur: neuron index number to tighten
         :param prev_l: numeric lower bounds on the previous layer
         :param prev_u: numeric upper bounds on the previous layer
         :param prev_z: forward pass solution in the previous layer for neuron
         :param curr_z: output of neuron
         :return: aff_fun, v = affine inequality function (weights, bias), violation
         """
-        #need numeric bounds on previous layer, solution in previous layer
 
-        #need information about layer output (x for layer) to determine violation?
-
-        #remember to use negative affine function for lower bounds
-
-        # aff_w = self.funcw_aff_ub
-        # aff_b = self.funcb_aff_ub
-        # v = np.ones((self.output_shape))
-        #
-        # aff_fun = [aff_w, aff_b]
-        # return aff_fun, v
-
+        #Get current upper bounding function
         aff_w = np.zeros(self.funcw_aff_ub.shape)
         aff_b = np.zeros(self.funcb_aff_ub.shape)
 
+        #Violations at solution for each neuron
         v = np.zeros((self.output_shape))
 
-
+        #Find inequality at each neuron
         for i in range(self.output_shape):
 
+            #Get neuron affine function
             neur_weight = np.copy(self.weights[:,i])
             neur_bias = np.copy(self.bias[i])
 
+            #Construct lower/upper bound objects
             Lhat = np.where(neur_weight >= 0, prev_l, prev_u)
             Uhat = np.where(neur_weight >= 0, prev_u, prev_l)
 
             diffhat = Uhat - Lhat
 
-            #TODO: supress or avoid zero division runtime warning
-            value = np.divide(prev_z - Lhat, diffhat)
+            #Find values for knapsack algorithm
+            value = np.divide(prev_z - Lhat, diffhat)   #TODO: supress or avoid zero division runtime warning
 
-            indsort = np.argsort(value)
+            indsort = np.argsort(value) #indices in order of smallest value
 
-            l_N = np.sum(neur_weight * Lhat) + neur_bias
+            l_N = np.sum(neur_weight * Lhat) + neur_bias #l([n])
 
+            #Check feasibility
             if l_N >= 0:
+                #Neuron always active
                 # TODO: confirm check feasibility: l([n]) >= 0?
-                #aff_w[:,i] = neur_weight
-                #aff_b[i] = neur_bias
+
                 aff_w[:,i] = np.copy(self.funcw_aff_ub[:,i])
                 aff_b[i] = np.copy(self.funcb_aff_ub[i])
 
             elif np.sum(neur_weight * Uhat) + neur_bias < 0:
+                #Neuron always inactive
                 pass
 
             else:
 
-                l_I = np.sum(neur_weight * Uhat) + neur_bias
+                l_I = np.sum(neur_weight * Uhat) + neur_bias #l(0)
 
+                #Add indices to I/h until condition on l is met
                 j = -1
 
                 while l_I >= 0:
                     j = j + 1
                     l_I = l_I - neur_weight[indsort[j]] * diffhat[indsort[j]]
 
-
+                #Collect indices selected
                 h = indsort[j]
                 I = indsort[0:(j)]
 
+                #Compute final value of l(I)
                 l_I = np.sum(neur_weight * Uhat) + neur_bias - np.sum(neur_weight[I] * diffhat[I])
 
                 #TODO: remove if unnecessary
                 assert (l_I >= 0)
                 assert (l_I - neur_weight[h]*diffhat[h] < 0)
 
+                #Replace affine inequality with that represented by I/h
                 aff_w[I,i] = neur_weight[I]
                 aff_w[h,i] = l_I / diffhat[h]
 
                 aff_b[i] = -(np.sum(neur_weight[I]*Lhat[I]) + l_I*Lhat[h]/diffhat[h])
 
+            #Compute violation of inequality at solution
             v[i] = curr_z[i] - (np.matmul(aff_w[:,i].T, prev_z) + aff_b[i])
 
         aff_fun = [aff_w, aff_b]
