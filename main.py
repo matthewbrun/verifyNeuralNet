@@ -75,9 +75,38 @@ def test_layer_bound_solution():
 
     print(vnn.boundDiff(m, inp, d, 0, 1, 3))
 
+def test_bound_quality():
+
+    flag = True
+    while flag:
+        m = train_model()
+        inp = np.arange(24)
+        d = .5
+        lb = inp - d
+        ub = inp + d
+        i = 0
+
+        fcvb = vnn.boundDiff(m, inp, d, 0, 1, 3)
+
+        for i in range(100):
+
+
+            scale = (2*np.random.randint(0,2,24) - 1)*d
+
+            out = m.predict(np.array([inp + scale]))
+
+            if out[0][1]-out[0][0] > fcvb:
+                print("WRONG")
+                flag = False
+                break
+
+
+
 
 #test_deeppoly_bounds()
 
 #test_LP()
 
-test_layer_bound_solution()
+#test_layer_bound_solution()
+
+test_bound_quality()
