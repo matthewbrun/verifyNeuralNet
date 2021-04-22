@@ -1,6 +1,7 @@
 import numpy as np
 import keras
 
+#TODO: reduce use of np.copy - only necessary when resulting object edited
 
 class Sequential:
 
@@ -31,7 +32,7 @@ class Sequential:
         """
         Generate upper and lower bounds on the affine function within each neuron
 
-        :param method: method for bound propogation, 1 = interval arithmetic, 2 = DeepPoly
+        :param method: method for bound propogation, 1 = interval arithmetic, 2 = DeepPoly, 3 = FastC2V
         :param input: numeric input to verify
         :param distance: l_inf distance around input to consider
         """
@@ -47,13 +48,19 @@ class Sequential:
             #Iteratively generate bounds on successive layers
             for i, layer in enumerate(self.layers[1:],start=1):
                 prev_layer = self.layers[i-1]
-                self.layers[i].generate_interval_bounds(prev_layer.numeric_relu_lb, prev_layer.numeric_relu_ub)
+                self.layers[i].generate_interval_bounds(np.copy(prev_layer.numeric_relu_lb), np.copy(prev_layer.numeric_relu_ub))
 
         if method == 2: #DeepPoly
+
+            #Keep affine bounding functions from previous layers in the form (weights, biases)
+            aff_lbs = []
+            aff_ubs = []
+
             # Iteratively generate bounds on successive layers
+
             for i, layer in enumerate(self.layers):
                 #Generate lower and upper bounds from a backwards pass
-                L, U = self.backwards_pass(i, input_lb, input_ub)
+                L, U, *__ = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
 
                 #Set layer numeric lower and upper affine bounds
                 layer.numeric_aff_ub = U
@@ -61,66 +68,121 @@ class Sequential:
 
                 #Generate lower and upper bounding affine function for layer
 
-                ub_w = layer.weights #upper bounding weights matrix
-                lb_w = layer.weights #lower bounding weights matrix
+                layer.generate_DeepPoly_bounds()
+                aff_lbs.append( [np.copy(layer.funcw_aff_lb), np.copy(layer.funcb_aff_lb)] )
+                aff_ubs.append( [np.copy(layer.funcw_aff_ub), np.copy(layer.funcb_aff_ub)] )
 
-                ub_b = layer.bias #upper bounding intercept
-                lb_b = layer.bias #lower bounding intercept
+        if method == 3: #FastC2V
 
-                for i in range(len(U)):
-
-                    #If U <= 0, inactive, set bounding functions to 0
-                    if U[i] <= 0:
-                        ub_w[:,i] = 0
-                        lb_w[:,i] = 0
-
-                        ub_b[i] = 0
-                        lb_b[i] = 0
-
-                    #If U > 0 and L < 0, use DeepPoly bounding functions
-                    elif L[i] < 0:
-
-                        ub_w[:,i] = U[i]/(U[i]-L[i]) * ub_w[:,i]
-                        ub_b[i] = U[i]/(U[i]-L[i]) * (ub_b[i] - L[i])
-
-                        if abs(L[i]) >= abs(U[i]):
-
-                            lb_w[:,i] = 0
-                            lb_b[i] = 0
-
-                    #Otherwise, L >= 0, active, use default affine function as bounding functions
+            #Keep affine bounding functions from previous layers in the form (weights, biases)
+            aff_lbs = []
+            aff_ubs = []
 
 
-                #Add bounding function parameters to layer object
-                layer.funcw_aff_ub = ub_w
-                layer.funcw_aff_lb = lb_w
+            for i, layer in enumerate(self.layers):
 
-                layer.funcb_aff_ub = ub_b
-                layer.funcb_aff_lb = lb_b
+                #Generate lower and upper bounds and solution data from a backwards pass
+                L, U, x_lb, x_ub, top_lbs, top_ubs = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
 
-
-
+                #Find solution from backwards pass data
+                z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub)
 
 
+                #This is inefficient: loops over each neuron in layer
+                #is it possible to vectorize these computations?
+
+                #Generate new tightened numeric bounds at each neuron in present layer
+                for j in range(layer.output_shape):
+                    new_aff_ubs_lb = []
+                    new_aff_ubs_ub = []
+                    for item in aff_ubs:
+                        new_aff_ubs_lb.append( [np.copy(item[0]), np.copy(item[1])] ) #replaced affine upper bounds for neuron lower bound
+                        new_aff_ubs_ub.append( [np.copy(item[0]), np.copy(item[1])] )  # replaced affine upper bounds for neuron upper bound
+
+                    #Track numeric bounds on previous layer
+                    prev_l = input_lb
+                    prev_u = input_ub
+
+                    #Tighten bounds on each preceeding layer
+                    for k, tighten_layer in enumerate(self.layers[0:i]):
+
+                        #Find most violated inequalities given solution for fixed neuron and lower/upper bounded solutions
+                        new_aff_lb, viol_lb = tighten_layer.most_violated_inequality(prev_l, prev_u, z_lb[k][:,j], z_lb[k+1][:,j]) #lb
+
+                        new_aff_ub, viol_ub = tighten_layer.most_violated_inequality(prev_l, prev_u, z_ub[k][:,j], z_ub[k + 1][:,j]) #ub
+
+                        #If the inequalities are violated, replace for this neuron
+                        new_aff_ubs_lb[k][0] = np.where(viol_lb > 0, new_aff_lb[0], new_aff_ubs_lb[k][0])
+                        new_aff_ubs_ub[k][0] = np.where(viol_ub > 0, new_aff_ub[0], new_aff_ubs_ub[k][0])
+
+                        new_aff_ubs_lb[k][1] = np.where(viol_lb > 0, new_aff_lb[1], new_aff_ubs_lb[k][1])
+                        new_aff_ubs_ub[k][1] = np.where(viol_ub > 0, new_aff_ub[1], new_aff_ubs_ub[k][1])
+
+                        #Update numeric bounds for next layer
+                        prev_l = np.copy(tighten_layer.numeric_relu_lb)
+                        prev_u = np.copy(tighten_layer.numeric_relu_ub)
+
+                    #This is inefficient: only need backwards pass to a single neuron in the last layer, not all neurons
+                    #Also, only need lower or upper bound at a time, not both
+
+                    #Repeat backwards pass with new affine bounds for current neuron
+                    Lj_new, *__ = self.backwards_pass(i, aff_lbs, new_aff_ubs_lb, input_lb, input_ub)
+                    __, Uj_new, *__ = self.backwards_pass(i, aff_lbs, new_aff_ubs_ub, input_lb, input_ub)
+
+                    #Replace numeric bounds at current neuron if improved
+                    L[j] = max(Lj_new[j], L[j])
+                    U[j] = min(Uj_new[j], U[j])
+
+                #Set layer numeric lower and upper affine bounds
+                layer.numeric_aff_ub = U
+                layer.numeric_aff_lb = L
+
+                #Generate lower and upper bounding affine function for layer
+
+                layer.generate_DeepPoly_bounds()
+                aff_lbs.append( [np.copy(layer.funcw_aff_lb), np.copy(layer.funcb_aff_lb)] )
+                aff_ubs.append( [np.copy(layer.funcw_aff_ub), np.copy(layer.funcb_aff_ub)] )
 
 
-    def backwards_pass(self, l_num, input_lb, input_ub):
+
+
+
+
+
+
+
+
+
+    def backwards_pass(self, l_num, aff_lbs, aff_ubs, input_lb, input_ub):
         """
         Generate upper and lower numeric bounds on layer affine outputs via a backwards pass over the network
         :param l_num: layer number on which to develop bounds
+        :param aff_lbs: list of affine lower bounds on each preceeding layer, affine function defined by (weights, biases)
+        :param aff_ubs: list of affine upper bounds on each preceeding layer, affine function defined by (weights, biases)
         :param input_lb: lower bounds on input space
         :param input_ub: upper bounds on input space
         :return: lb, ub: lower and upper numeric bounds on affine functions for layer
+                x_lb, x_ub: feasible input points for lower and upper bounds at each neron in the layer
+                top_lbs, top_ubs: boolean indicator of whether upper bounds were taken at each neuron (layer neurons down columns, input neurons on rows)
         """
-        #Get current neuron affine functions
-        c_uw = self.layers[l_num].weights #positive for upper bound
-        c_ub = self.layers[l_num].bias
 
-        c_lw = -self.layers[l_num].weights #negative for lower bound
-        c_lb = -self.layers[l_num].bias
+        #Track if upper bounds are taken in back propogation
+        top_lbs = []
+        top_ubs = []
+
+        #Get current neuron affine functions
+        c_uw = np.copy(self.layers[l_num].weights) #positive for upper bound
+        c_ub = np.copy(self.layers[l_num].bias)
+
+        c_lw = -np.copy(self.layers[l_num].weights) #negative for lower bound
+        c_lb = -np.copy(self.layers[l_num].bias)
 
         #Iterate backwards over layers
         for i in range(l_num-1,-1,-1):
+
+            #Add upper bound indicators for current layer
+            top_ubs.insert(0, c_uw > 0)
+            top_lbs.insert(0, c_lw > 0)
 
             cuwp = np.where(c_uw > 0, c_uw, 0) #postive weight matrix for upper bound
             cuwn = np.where(c_uw < 0, c_uw, 0) #negative weight matrix for upper bound
@@ -129,11 +191,11 @@ class Sequential:
             clwn = np.where(c_lw < 0, c_lw, 0) #negative weight matrix for lower bound
 
             #Transform weights/bias backwards through layer by taking affine composite
-            c_uw = np.matmul(self.layers[i].funcw_aff_ub, cuwp) + np.matmul(self.layers[i].funcw_aff_lb, cuwn)
-            c_lw = np.matmul(self.layers[i].funcw_aff_ub, clwp) + np.matmul(self.layers[i].funcw_aff_lb, clwn)
+            c_uw = np.matmul(aff_ubs[i][0], cuwp) + np.matmul(aff_lbs[i][0], cuwn)
+            c_lw = np.matmul(aff_ubs[i][0], clwp) + np.matmul(aff_lbs[i][0], clwn)
 
-            c_ub = c_ub + np.matmul(self.layers[i].funcb_aff_ub, cuwp) + np.matmul(self.layers[i].funcb_aff_lb, cuwn)
-            c_lb = c_lb + np.matmul(self.layers[i].funcb_aff_ub, clwp) + np.matmul(self.layers[i].funcb_aff_lb, clwn)
+            c_ub = c_ub + np.matmul(aff_ubs[i][1], cuwp) + np.matmul(aff_lbs[i][1], cuwn)
+            c_lb = c_lb + np.matmul(aff_ubs[i][1], clwp) + np.matmul(aff_lbs[i][1], clwn)
 
         #Maximize upper/lower bound over input space
         cuwp = np.where(c_uw > 0, c_uw, 0)
@@ -145,7 +207,69 @@ class Sequential:
         ub = np.matmul(cuwp.T, input_ub) + np.matmul(cuwn.T, input_lb) + c_ub
         lb = -1 * (np.matmul(clwp.T, input_ub) + np.matmul(clwn.T, input_lb) + c_lb)
 
-        return lb, ub
+        #Generate feasible solution for upper and lower bounds
+        x_ub = np.where(c_uw.T > 0, input_ub, input_lb).T #neuron in columns, x indices across rows
+        x_lb = np.where(c_lw.T > 0, input_ub, input_lb).T
+
+        return lb, ub, x_lb, x_ub, top_lbs, top_ubs
+
+
+
+    def forwards_pass(self, l_num, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub):
+        """
+        Generates a full solution for preceeding layers using a forward pass, based on results from backward propogation
+        :param l_num: layer number to which the forward pass is done
+        :param aff_lbs: list of affine lower bounds on each preceeding layer, affine function defined by (weights, biases)
+        :param aff_ubs: list of affine upper bounds on each preceeding layer, affine function defined by (weights, biases)
+        :param top_lbs: list of boolean indicator of whether upper bounds were taken at each neuron within preceeding layers,
+                        for each neuron in the current layer on the lower bound solution (list index for previous layer number,
+                        rows of matrix for previous layer neurons, columns of matrix for present layer neurons)
+        :param top_ubs: list of boolean indicator of whether upper bounds were taken at each neuron within preceeding layers,
+                        for each neuron in the current layer on the upper bound solution
+        :param x_lb: feasible input to generate layer's lower bound
+        :param x_ub: feasible input to generate later's upper bound
+        :return: z_lb, z_ub: lists of matrices with upper bound and lower bound solutions for each layer neuron (columns)
+                            at preceeding layer (list index) neurons (row)
+        """
+
+        #Initialize solution with input values
+        z_lb = [x_lb]
+        z_ub = [x_ub]
+
+        #Track solution in previous layer
+        prev_lb = x_lb
+        prev_ub = x_ub
+
+        #Get ouput shape of current layer (columns in solution matrix z)
+        n_neur = self.layers[l_num].output_shape
+
+        #Forwards pass over preceeding layers
+        for i in range(l_num):
+
+            #Take lower bounding affine transformation on previous layer solution if upper bound not used,
+            # otherwise take upper bounding affine transformation to get solution in next layer
+
+            next_z_lb = (np.matmul(aff_lbs[i][0].T, prev_lb) + np.tile(np.reshape(aff_lbs[i][1], (-1,1)), (1,n_neur))) * (1 - top_lbs[i]) + \
+                        (np.matmul(aff_ubs[i][0].T, prev_lb) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur))) * top_lbs[i]
+            next_z_ub = (np.matmul(aff_lbs[i][0].T, prev_ub) + np.tile(np.reshape(aff_lbs[i][1], (-1,1)), (1,n_neur))) * (1 - top_ubs[i]) + \
+                        (np.matmul(aff_ubs[i][0].T, prev_lb) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur))) * top_ubs[i]
+
+            #Add layer solution to z vector
+            z_lb.append(next_z_lb)
+            z_ub.append(next_z_ub)
+
+            #Update previous layer solution
+            prev_lb = next_z_lb
+            prev_ub = next_z_ub
+
+            # print("Iter " + str(i))
+            # print(prev_lb.shape)
+            # print(top_lbs[i].shape)
+            # print(aff_lbs[i][0].shape)
+
+        return z_lb, z_ub
+
+
 
 
 class Layer:
@@ -155,6 +279,8 @@ class Layer:
         self.weights = weights
         self.bias = bias
         self.label = label
+
+
 
 
 class Dense(Layer):
@@ -184,10 +310,143 @@ class Dense(Layer):
         self.numeric_relu_ub = np.maximum(self.numeric_aff_ub, 0)
         self.numeric_relu_lb = np.maximum(self.numeric_aff_lb, 0)
 
+    def generate_DeepPoly_bounds(self):
+        """
+        Generate affine bounding functions on neuron layer using the DeepPoly method
+        Requires self.numeric_aff_lb and self.numeric_aff_ub be set to numeric upper and lower bounds on each neruon
+        """
+
+        L = np.copy(self.numeric_aff_lb)
+        U = np.copy(self.numeric_aff_ub)
+
+        #Post-activation bounds on ReLU
+        self.numeric_relu_ub = np.maximum(self.numeric_aff_ub, 0)
+        self.numeric_relu_lb = np.maximum(self.numeric_aff_lb, 0)
+
+        ub_w = np.copy(self.weights)  # upper bounding weights matrix
+        lb_w = np.copy(self.weights)  # lower bounding weights matrix
+
+        ub_b = np.copy(self.bias)  # upper bounding intercept
+        lb_b = np.copy(self.bias)  # lower bounding intercept
+
+        for i in range(len(U)):
+
+            # If U <= 0, inactive, set bounding functions to 0
+            if U[i] <= 0:
+                ub_w[:, i] = 0
+                lb_w[:, i] = 0
+
+                ub_b[i] = 0
+                lb_b[i] = 0
+
+            # If U > 0 and L < 0, use DeepPoly bounding functions
+            elif L[i] < 0:
+
+                ub_w[:, i] = U[i] / (U[i] - L[i]) * ub_w[:, i]
+                ub_b[i] = U[i] / (U[i] - L[i]) * (ub_b[i] - L[i])
+
+                if abs(L[i]) >= abs(U[i]):
+                    lb_w[:, i] = 0
+                    lb_b[i] = 0
+
+            # Otherwise, L >= 0, active, use default affine function as bounding functions
+
+        # Add bounding function parameters to layer object
+        self.funcw_aff_ub = ub_w
+        self.funcw_aff_lb = lb_w
+
+        self.funcb_aff_ub = ub_b
+        self.funcb_aff_lb = lb_b
+
+    def most_violated_inequality(self, prev_l, prev_u, prev_z, curr_z):
+        """
+        Finds the affine representation of the most violated inequality from the convex relaxation for a neuron
+        :param prev_l: numeric lower bounds on the previous layer
+        :param prev_u: numeric upper bounds on the previous layer
+        :param prev_z: forward pass solution in the previous layer for neuron
+        :param curr_z: output of neuron
+        :return: aff_fun, v = affine inequality function (weights, bias), violation
+        """
+
+        #Get current upper bounding function
+        aff_w = np.zeros(self.funcw_aff_ub.shape)
+        aff_b = np.zeros(self.funcb_aff_ub.shape)
+
+        #Violations at solution for each neuron
+        v = np.zeros((self.output_shape))
+
+        #Find inequality at each neuron
+        for i in range(self.output_shape):
+
+            #Get neuron affine function
+            neur_weight = np.copy(self.weights[:,i])
+            neur_bias = np.copy(self.bias[i])
+
+            #Construct lower/upper bound objects
+            Lhat = np.where(neur_weight >= 0, prev_l, prev_u)
+            Uhat = np.where(neur_weight >= 0, prev_u, prev_l)
+
+            diffhat = Uhat - Lhat
+
+            #Find values for knapsack algorithm
+            value = np.divide(prev_z - Lhat, diffhat)   #TODO: supress or avoid zero division runtime warning
+
+            indsort = np.argsort(value) #indices in order of smallest value
+
+            l_N = np.sum(neur_weight * Lhat) + neur_bias #l([n])
+
+            #Check feasibility
+            if l_N >= 0:
+                #Neuron always active
+                # TODO: confirm check feasibility: l([n]) >= 0?
+
+                aff_w[:,i] = np.copy(self.funcw_aff_ub[:,i])
+                aff_b[i] = np.copy(self.funcb_aff_ub[i])
+
+            elif np.sum(neur_weight * Uhat) + neur_bias < 0:
+                #Neuron always inactive
+                pass
+
+            else:
+
+                l_I = np.sum(neur_weight * Uhat) + neur_bias #l(0)
+
+                #Add indices to I/h until condition on l is met
+                j = -1
+
+                while l_I >= 0:
+                    j = j + 1
+                    l_I = l_I - neur_weight[indsort[j]] * diffhat[indsort[j]]
+
+                #Collect indices selected
+                h = indsort[j]
+                I = indsort[0:(j)]
+
+                #Compute final value of l(I)
+                l_I = np.sum(neur_weight * Uhat) + neur_bias - np.sum(neur_weight[I] * diffhat[I])
+
+                #TODO: remove if unnecessary
+                assert (l_I >= 0)
+                assert (l_I - neur_weight[h]*diffhat[h] < 0)
+
+                #Replace affine inequality with that represented by I/h
+                aff_w[I,i] = neur_weight[I]
+                aff_w[h,i] = l_I / diffhat[h]
+
+                aff_b[i] = -(np.sum(neur_weight[I]*Lhat[I]) + l_I*Lhat[h]/diffhat[h])
+
+            #Compute violation of inequality at solution
+            v[i] = curr_z[i] - (np.matmul(aff_w[:,i].T, prev_z) + aff_b[i])
+
+        aff_fun = [aff_w, aff_b]
+
+        return aff_fun, v
+
+
 
 
 class AffineFunction:
-
+    # TODO: remove?
     def __init__(self, w = [], b = 0):
 
         self.w = {}
