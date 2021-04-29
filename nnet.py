@@ -392,11 +392,8 @@ class Dense(Layer):
             diffhat = Uhat - Lhat
 
             #Find values for knapsack algorithm
-            prevdiff = prev_z - Lhat
-            adjdiff = np.where(diffhat == 0, float('inf'), prevdiff)
-
             value = np.full(diffhat.shape, float('inf'))
-            value = np.divide(adjdiff, diffhat, out = value, where = diffhat != 0)
+            value = np.divide(prev_z - Lhat, diffhat, out = value, where = diffhat != 0)
 
             indsort = np.argsort(value) #indices in order of smallest value
 
