@@ -107,9 +107,10 @@ class Sequential:
                     for k, tighten_layer in enumerate(self.layers[0:i]):
 
                         #Find most violated inequalities given solution for fixed neuron and lower/upper bounded solutions
-                        new_aff_lb, viol_lb = tighten_layer.most_violated_inequality(prev_l, prev_u, z_lb[k][:,j], z_lb[k+1][:,j]) #lb
+                        #TODO: max here on z_lb/z_ub?
+                        new_aff_lb, viol_lb = tighten_layer.most_violated_inequality(prev_l, prev_u, np.maximum(z_lb[k][:,j],0), z_lb[k+1][:,j]) #lb
 
-                        new_aff_ub, viol_ub = tighten_layer.most_violated_inequality(prev_l, prev_u, z_ub[k][:,j], z_ub[k + 1][:,j]) #ub
+                        new_aff_ub, viol_ub = tighten_layer.most_violated_inequality(prev_l, prev_u, np.maximum(z_ub[k][:,j],0), z_ub[k+1][:,j]) #ub
 
                         #If the inequalities are violated, replace for this neuron
                         new_aff_ubs_lb[k][0] = np.where(viol_lb > 0, new_aff_lb[0], new_aff_ubs_lb[k][0])
@@ -147,12 +148,6 @@ class Sequential:
 
 
             pass
-
-
-
-
-
-
 
 
 
@@ -219,7 +214,7 @@ class Sequential:
 
 
 
-    def forwards_pass(self, l_num, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub):
+    def forwards_pass(self, l_num, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, use_relu = True):
         """
         Generates a full solution for preceeding layers using a forward pass, based on results from backward propogation
         :param l_num: layer number to which the forward pass is done
@@ -256,7 +251,11 @@ class Sequential:
             next_z_lb = (np.matmul(aff_lbs[i][0].T, prev_lb) + np.tile(np.reshape(aff_lbs[i][1], (-1,1)), (1,n_neur))) * (1 - top_lbs[i]) + \
                         (np.matmul(aff_ubs[i][0].T, prev_lb) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur))) * top_lbs[i]
             next_z_ub = (np.matmul(aff_lbs[i][0].T, prev_ub) + np.tile(np.reshape(aff_lbs[i][1], (-1,1)), (1,n_neur))) * (1 - top_ubs[i]) + \
-                        (np.matmul(aff_ubs[i][0].T, prev_lb) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur))) * top_ubs[i]
+                        (np.matmul(aff_ubs[i][0].T, prev_ub) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur))) * top_ubs[i]
+
+            if use_relu:
+                next_z_lb = np.maximum(next_z_lb, 0)
+                next_z_ub = np.maximum(next_z_ub, 0)
 
             #Add layer solution to z vector
             z_lb.append(next_z_lb)
@@ -393,7 +392,11 @@ class Dense(Layer):
             diffhat = Uhat - Lhat
 
             #Find values for knapsack algorithm
-            value = np.divide(prev_z - Lhat, diffhat)   #TODO: supress or avoid zero division runtime warning
+            prevdiff = prev_z - Lhat
+            adjdiff = np.where(diffhat == 0, float('inf'), prevdiff)
+
+            value = np.full(diffhat.shape, float('inf'))
+            value = np.divide(adjdiff, diffhat, out = value, where = diffhat != 0)
 
             indsort = np.argsort(value) #indices in order of smallest value
 
@@ -403,13 +406,23 @@ class Dense(Layer):
             #Check feasibility
             if l_N >= 0:
                 #Neuron always active
-                # TODO: confirm check feasibility: l([n]) >= 0?
+                aff_w[:,i] = np.copy(self.weights[:,i])
+                aff_b[i] = np.copy(self.bias[i])
 
-                aff_w[:,i] = np.copy(self.funcw_aff_ub[:,i])
-                aff_b[i] = np.copy(self.funcb_aff_ub[i])
+                # TODO: confirm check feasibility: should be good, check that the violation is always 0
+                #Checking violation - maybe this is pointless
+                #if np.linalg.norm(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])) > 1e-14:
+                #    print("ln: " + str(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])))
+                #assert (np.linalg.norm(curr_z[i] - (np.matmul(aff_w[:,i].T, prev_z) + aff_b[i])) < (.1))
 
             elif l_0 < 0:
                 #Neuron always inactive
+
+                #Checking violation - maybe this is pointless
+                #if np.linalg.norm(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])) > 1e-14:
+                #    print("l0: "+ str(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])))
+                #assert (np.linalg.norm(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])) < (.1))
+
                 pass
 
             else:
@@ -430,9 +443,8 @@ class Dense(Layer):
                 #Compute final value of l(I)
                 l_I = np.sum(neur_weight * Uhat) + neur_bias - np.sum(neur_weight[I] * diffhat[I])
 
-                #TODO: remove if unnecessary
-                assert (l_I >= 0)
-                assert (l_I - neur_weight[h]*diffhat[h] < 0)
+                assert (l_I >= -(1e-10))
+                assert (l_I - neur_weight[h]*diffhat[h] < (1e-10))
 
                 #Replace affine inequality with that represented by I/h
                 aff_w[I,i] = neur_weight[I]
