@@ -107,6 +107,6 @@ def test_bound_quality():
 
 #test_LP()
 
-test_layer_bound_solution()
+#test_layer_bound_solution()
 
-#test_bound_quality()
+test_bound_quality()

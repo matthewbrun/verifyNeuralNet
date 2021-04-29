@@ -28,7 +28,7 @@ class Sequential:
         layerclass = Dense(weights, bias, "l" + str(len(self.layers)))
         self.layers.append(layerclass)
 
-    def generate_bounds(self, method, input, distance):
+    def generate_bounds(self, method, input, distance, use_FP_relu = False):
         """
         Generate upper and lower bounds on the affine function within each neuron
 
@@ -67,8 +67,11 @@ class Sequential:
                 layer.numeric_aff_lb = L
 
                 #Generate lower and upper bounding affine function for layer
+                if i > 0:
+                    layer.generate_DeepPoly_bounds(np.copy(self.layers[i-1].numeric_relu_lb), np.copy(self.layers[i-1].numeric_relu_ub))
+                else:
+                    layer.generate_DeepPoly_bounds(input_lb, input_ub)
 
-                layer.generate_DeepPoly_bounds()
                 aff_lbs.append( [np.copy(layer.funcw_aff_lb), np.copy(layer.funcb_aff_lb)] )
                 aff_ubs.append( [np.copy(layer.funcw_aff_ub), np.copy(layer.funcb_aff_ub)] )
 
@@ -85,7 +88,7 @@ class Sequential:
                 L, U, x_lb, x_ub, top_lbs, top_ubs = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
 
                 #Find solution from backwards pass data
-                z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub)
+                z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, use_FP_relu)
 
 
                 #This is inefficient: loops over each neuron in layer
@@ -107,10 +110,18 @@ class Sequential:
                     for k, tighten_layer in enumerate(self.layers[0:i]):
 
                         #Find most violated inequalities given solution for fixed neuron and lower/upper bounded solutions
-                        #TODO: max here on z_lb/z_ub?
-                        new_aff_lb, viol_lb = tighten_layer.most_violated_inequality(prev_l, prev_u, np.maximum(z_lb[k][:,j],0), z_lb[k+1][:,j]) #lb
 
-                        new_aff_ub, viol_ub = tighten_layer.most_violated_inequality(prev_l, prev_u, np.maximum(z_ub[k][:,j],0), z_ub[k+1][:,j]) #ub
+                        #Take ReLU of inputs if specified in parameter
+                        if k > 0 and use_FP_relu:
+                            z_lb_inp = np.maximum(z_lb[k][:,j],0)
+                            z_ub_inp = np.maximum(z_ub[k][:,j], 0)
+                        else:
+                            z_lb_inp = z_lb[k][:, j]
+                            z_ub_inp = z_ub[k][:, j]
+
+                        new_aff_lb, viol_lb = tighten_layer.most_violated_inequality(prev_l, prev_u, z_lb_inp, z_lb[k+1][:,j]) #lb
+
+                        new_aff_ub, viol_ub = tighten_layer.most_violated_inequality(prev_l, prev_u, z_ub_inp, z_ub[k+1][:,j]) #ub
 
                         #If the inequalities are violated, replace for this neuron
                         new_aff_ubs_lb[k][0] = np.where(viol_lb > 0, new_aff_lb[0], new_aff_ubs_lb[k][0])
@@ -139,8 +150,11 @@ class Sequential:
                 layer.numeric_aff_lb = L
 
                 #Generate lower and upper bounding affine function for layer
+                if i > 0:
+                    layer.generate_DeepPoly_bounds(np.copy(self.layers[i-1].numeric_relu_lb), np.copy(self.layers[i-1].numeric_relu_ub))
+                else:
+                    layer.generate_DeepPoly_bounds(input_lb, input_ub)
 
-                layer.generate_DeepPoly_bounds()
                 aff_lbs.append( [np.copy(layer.funcw_aff_lb), np.copy(layer.funcb_aff_lb)] )
                 aff_ubs.append( [np.copy(layer.funcw_aff_ub), np.copy(layer.funcb_aff_ub)] )
 
@@ -214,7 +228,7 @@ class Sequential:
 
 
 
-    def forwards_pass(self, l_num, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, use_relu = True):
+    def forwards_pass(self, l_num, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, use_relu = False):
         """
         Generates a full solution for preceeding layers using a forward pass, based on results from backward propogation
         :param l_num: layer number to which the forward pass is done
@@ -253,22 +267,19 @@ class Sequential:
             next_z_ub = (np.matmul(aff_lbs[i][0].T, prev_ub) + np.tile(np.reshape(aff_lbs[i][1], (-1,1)), (1,n_neur))) * (1 - top_ubs[i]) + \
                         (np.matmul(aff_ubs[i][0].T, prev_ub) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur))) * top_ubs[i]
 
-            if use_relu:
-                next_z_lb = np.maximum(next_z_lb, 0)
-                next_z_ub = np.maximum(next_z_ub, 0)
 
             #Add layer solution to z vector
             z_lb.append(next_z_lb)
             z_ub.append(next_z_ub)
 
-            #Update previous layer solution
-            prev_lb = next_z_lb
-            prev_ub = next_z_ub
+            #Pass outputs through ReLU if specified in parameter
+            if use_relu:
+                prev_lb = np.copy(np.maximum(next_z_lb, 0))
+                prev_ub = np.copy(np.maximum(next_z_ub, 0))
+            else:
+                prev_lb = next_z_lb
+                prev_ub = next_z_ub
 
-            # print("Iter " + str(i))
-            # print(prev_lb.shape)
-            # print(top_lbs[i].shape)
-            # print(aff_lbs[i][0].shape)
 
         return z_lb, z_ub
 
@@ -313,14 +324,24 @@ class Dense(Layer):
         self.numeric_relu_ub = np.maximum(self.numeric_aff_ub, 0)
         self.numeric_relu_lb = np.maximum(self.numeric_aff_lb, 0)
 
-    def generate_DeepPoly_bounds(self):
+    def generate_DeepPoly_bounds(self, prev_l, prev_u):
         """
         Generate affine bounding functions on neuron layer using the DeepPoly method
         Requires self.numeric_aff_lb and self.numeric_aff_ub be set to numeric upper and lower bounds on each neruon
+        :param prev_l: lower bound on previous layer
+        :param prev_u: upper bound on previous layer
         """
 
         L = np.copy(self.numeric_aff_lb)
         U = np.copy(self.numeric_aff_ub)
+
+        #Take better of interval arithmetic and provided bounds
+        self.generate_interval_bounds(prev_l, prev_u)
+
+        L = np.maximum(np.copy(self.numeric_aff_lb), L)
+        U = np.minimum(np.copy(self.numeric_aff_ub), U)
+        self.numeric_aff_lb = L
+        self.numeric_aff_ub = U
 
         #Post-activation bounds on ReLU
         self.numeric_relu_ub = np.maximum(self.numeric_aff_ub, 0)
@@ -406,19 +427,12 @@ class Dense(Layer):
                 aff_w[:,i] = np.copy(self.weights[:,i])
                 aff_b[i] = np.copy(self.bias[i])
 
-                # TODO: confirm check feasibility: should be good, check that the violation is always 0
-                #Checking violation - maybe this is pointless
-                #if np.linalg.norm(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])) > 1e-14:
-                #    print("ln: " + str(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])))
-                #assert (np.linalg.norm(curr_z[i] - (np.matmul(aff_w[:,i].T, prev_z) + aff_b[i])) < (.1))
+                assert (abs(curr_z[i] - (np.matmul(aff_w[:,i].T, prev_z) + aff_b[i])) < 1e-10)
 
             elif l_0 < 0:
                 #Neuron always inactive
 
-                #Checking violation - maybe this is pointless
-                #if np.linalg.norm(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])) > 1e-14:
-                #    print("l0: "+ str(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])))
-                #assert (np.linalg.norm(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])) < (.1))
+                assert (abs(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])) < 1e-10)
 
                 pass
 
@@ -441,7 +455,7 @@ class Dense(Layer):
                 l_I = np.sum(neur_weight * Uhat) + neur_bias - np.sum(neur_weight[I] * diffhat[I])
 
                 assert (l_I >= -(1e-10))
-                assert (l_I - neur_weight[h]*diffhat[h] < (1e-10))
+                assert (l_I - neur_weight[h]*diffhat[h] < 1e-10)
 
                 #Replace affine inequality with that represented by I/h
                 aff_w[I,i] = neur_weight[I]
@@ -488,9 +502,9 @@ class Dense(Layer):
             l_0 = np.sum(neur_weight * Uhat) + neur_bias #l(0)
 
             #Check feasibility
+            #TODO: update alongside most_violated_inequality
             if l_N >= 0:
                 #Neuron always active
-                # TODO: confirm check feasibility: l([n]) >= 0?
 
                 aff_w[:,i] = np.copy(self.funcw_aff_ub[:,i])
                 aff_b[i] = np.copy(self.funcb_aff_ub[i])
@@ -515,7 +529,6 @@ class Dense(Layer):
                 #Compute final value of l(I)
                 l_I = np.sum(neur_weight * Uhat) + neur_bias - np.sum(neur_weight[I] * diffhat[I])
 
-                #TODO: remove if unnecessary
                 assert (l_I >= 0)
                 assert (l_I - neur_weight[h]*diffhat[h] < 0)
 
