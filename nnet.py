@@ -1,5 +1,9 @@
 import numpy as np
+import scipy.sparse as sp
 import keras
+
+import gurobipy as gp
+from gurobipy import GRB
 
 #TODO: reduce use of np.copy - only necessary when resulting object edited
 
@@ -228,7 +232,7 @@ class Sequential:
 
 
 
-    def forwards_pass(self, l_num, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, use_relu = False):
+    def forwards_pass(self, l_num, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, use_relu = True):
         """
         Generates a full solution for preceeding layers using a forward pass, based on results from backward propogation
         :param l_num: layer number to which the forward pass is done
@@ -470,17 +474,19 @@ class Dense(Layer):
 
         return aff_fun, v
 
-    def flattest_inequality(self, prev_l, prev_u):
+    def flattest_inequality(self, prev_l, prev_u, prev_z, curr_z):
         """
         Finds the affine representation of the flattest inequality from the convex relaxation for a neuron
         :param prev_l: numeric lower bounds on the previous layer
         :param prev_u: numeric upper bounds on the previous layer
-        :return: aff_fun: affine inequality function (weights, bias)
+        :param prev_z: forward pass solution in the previous layer for neuron
+        :param curr_z: output of neuron
+        :return: aff_fun, v: affine inequality function (weights, bias), violation
         """
 
         #Get current upper bounding function
-        aff_w = np.zeros(self.funcw_aff_ub.shape)
-        aff_b = np.zeros(self.funcb_aff_ub.shape)
+        aff_w = np.zeros(self.weights.shape)
+        aff_b = np.zeros(self.bias.shape)
 
         #Violations at solution for each neuron
         v = np.zeros((self.output_shape))
@@ -502,35 +508,103 @@ class Dense(Layer):
             l_0 = np.sum(neur_weight * Uhat) + neur_bias #l(0)
 
             #Check feasibility
-            #TODO: update alongside most_violated_inequality
             if l_N >= 0:
                 #Neuron always active
+                aff_w[:,i] = np.copy(self.weights[:,i])
+                aff_b[i] = np.copy(self.bias[i])
 
-                aff_w[:,i] = np.copy(self.funcw_aff_ub[:,i])
-                aff_b[i] = np.copy(self.funcb_aff_ub[i])
+                #assert (abs(curr_z[i] - (np.matmul(aff_w[:,i].T, prev_z) + aff_b[i])) < 1e-10)
 
             elif l_0 < 0:
                 #Neuron always inactive
+
+                #assert (abs(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])) < 1e-10)
+
                 pass
 
             else:
 
-                ######Build Model Here#######
+                ######FlatCut1 Model Here#######
 
+                #Set initial I,h,cost solution
+                c = float('inf')
+                h = 0
+                I = []
 
-                #TODO: Implement FlatCut1 Algorithm
+                #Compute set of potential optimal h based on largest w*(U-L)
+                value = neur_weight*diffhat
+                indsort = np.argsort(value)  # indices in order of smallest value
 
+                hset = [] #Set of candidate h
+                l_hset = l_0
 
+                h_idx = self.input_shape - 1
+                while l_hset >= 0: #l(hset) must be negative to have all h)
 
-                #####End Model#####
+                    #Add next largest h to hset
+                    hnext = indsort[h_idx]
+                    hset.append(hnext)
+
+                    l_hset = l_hset - value[hnext]
+                    h_idx = h_idx - 1
+
+                #Solve QKP over all candidate h, keep solution with lowest cost
+                for hc in hset:
+
+                    mpt = np.sum(neur_weight*(Uhat+Lhat)) + 2*neur_bias
+
+                    m = gp.Model("FlatCut1")
+
+                    u = m.addMVar(shape = (self.input_shape), vtype = GRB.BINARY) #binary inclusion variables for I
+
+                    #Add necessary constraint
+                    if mpt < 0:
+                        m.addConstr((neur_weight*diffhat) @ u <= np.sum(neur_weight*Uhat) + neur_bias)
+                    else:
+                        m.addConstr((-neur_weight*diffhat) @ u <= neur_weight[hc]*(diffhat[hc]) - np.sum(neur_weight*Uhat) - neur_bias)
+
+                    #Fix h not in I
+                    m.addConstr(u[hc] == 0)
+
+                    #Build objective function
+                    qMat = np.outer(neur_weight*diffhat,neur_weight*diffhat)/(neur_weight[hc]*diffhat[hc]) #quadratic term matrix
+                    obj = (u @ qMat @ u) + neur_weight*diffhat*(1-(np.sum(neur_weight*diffhat))/(neur_weight[hc]*diffhat[hc])) @ u
+
+                    m.setObjective(obj, GRB.MINIMIZE)
+                    m.setParam('OutputFlag', 0)
+
+                    #TODO: what should this tolerance be
+                    m.setParam('FeasibilityTol', 1e-9)
+                    m.setParam('OptimalityTol', 1e-9)
+
+                    m.optimize()
+
+                    #Extract optimal candidate I
+                    Ic = np.where(u.X > .5)
+                    l_Ic = np.sum(neur_weight * Uhat) + neur_bias - np.sum(neur_weight[Ic] * diffhat[Ic])
+
+                    #Confirm validity of computed solution
+                    assert (l_Ic >= -1e-5)
+                    assert (l_Ic - neur_weight[hc] * diffhat[hc] < 1e-5)
+
+                    #Compute objective cost of candidate I/h pair
+                    cc = (l_Ic / (neur_weight[hc]*diffhat[hc]) - 1)*(l_Ic - mpt)
+
+                    #If cost improved, keep current solution
+                    if cc < c:
+                        I = Ic
+                        h = hc
+                        c = cc
+
+                ######End Model######
 
                 #Keep I and h, objective value
 
                 #Compute final value of l(I)
                 l_I = np.sum(neur_weight * Uhat) + neur_bias - np.sum(neur_weight[I] * diffhat[I])
 
-                assert (l_I >= 0)
-                assert (l_I - neur_weight[h]*diffhat[h] < 0)
+                assert (l_I >= -1e-5)
+                assert (l_I - neur_weight[h]*diffhat[h] < 1e-5)
 
                 #Replace affine inequality with that represented by I/h
                 aff_w[I,i] = neur_weight[I]
@@ -538,13 +612,12 @@ class Dense(Layer):
 
                 aff_b[i] = -(np.sum(neur_weight[I]*Lhat[I]) + l_I*Lhat[h]/diffhat[h])
 
-            #TODO: keep?
             #Compute violation of inequality at solution
-            v[i] = curr_z[i] - (np.matmul(aff_w[:,i].T, prev_z) + aff_b[i])
+            #v[i] = curr_z[i] - (np.matmul(aff_w[:,i].T, prev_z) + aff_b[i])
 
         aff_fun = [aff_w, aff_b]
 
-        return aff_fun, v
+        return aff_fun, 0
 
 
 

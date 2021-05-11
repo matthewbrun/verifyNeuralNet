@@ -100,6 +100,17 @@ def test_bound_quality():
                 flag = False
                 break
 
+def test_flatcut():
+
+    m = train_model()
+    n = nnet.Sequential(m)
+    inp = np.arange(24)
+    d = .5
+    lb = inp-d
+    ub = inp+d
+
+    n.layers[0].flattest_inequality(lb,ub,0,0)
+
 
 
 
@@ -109,4 +120,6 @@ def test_bound_quality():
 
 #test_layer_bound_solution()
 
-test_bound_quality()
+#test_bound_quality()
+while True:
+    test_flatcut()
