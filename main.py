@@ -69,11 +69,13 @@ def test_layer_bound_solution():
 
     #print(out[0][1]-out[0][0])
 
-    #print(vnn.boundDiff(m, inp, d, 0, 1, 1))
+    print(vnn.boundDiff(m, inp, d, 0, 1, 1))
 
-    #print(vnn.boundDiff(m, inp, d, 0, 1, 2))
+    print(vnn.boundDiff(m, inp, d, 0, 1, 2))
 
     print(vnn.boundDiff(m, inp, d, 0, 1, 3))
+
+    print(vnn.boundDiff(m, inp, d, 0, 1, 4))
 
 def test_bound_quality():
 
@@ -118,8 +120,8 @@ def test_flatcut():
 
 #test_LP()
 
-#test_layer_bound_solution()
+test_layer_bound_solution()
 
 #test_bound_quality()
-while True:
-    test_flatcut()
+
+#test_flatcut()
