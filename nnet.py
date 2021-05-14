@@ -1,7 +1,13 @@
 import numpy as np
 import keras
 
+import gurobipy as gp
+from gurobipy import GRB
+
 #TODO: reduce use of np.copy - only necessary when resulting object edited
+#TODO: dynamic error sizes
+#TODO: add tolerances to tighten Gurobi constraints
+#TODO: add tolerances to make neuron (in)activity more lenient
 
 class Sequential:
 
@@ -28,14 +34,23 @@ class Sequential:
         layerclass = Dense(weights, bias, "l" + str(len(self.layers)))
         self.layers.append(layerclass)
 
-    def generate_bounds(self, method, input, distance):
+    def generate_bounds(self, method, input, distance, options = False):
         """
         Generate upper and lower bounds on the affine function within each neuron
 
-        :param method: method for bound propogation, 1 = interval arithmetic, 2 = DeepPoly, 3 = FastC2V
+        :param method: method for bound propogation, 1 = interval arithmetic, 2 = DeepPoly, 3 = FastC2V, 4 = FlatC2V
         :param input: numeric input to verify
         :param distance: l_inf distance around input to consider
+        :param options: BoundsOptions object specifying method options
         """
+
+        #Get options
+        if not options:
+            options = BoundsOptions()
+        use_FP_relu = options.use_FP_relu
+        use_viol = options.use_viol
+        do_iterative_tighten = options.do_iterative_tighten
+        use_flat_ubs = options.use_flat_ubs
 
         #Input bounds are determined from l_inf norm around a numeric input
         input_ub = input + distance
@@ -50,7 +65,7 @@ class Sequential:
                 prev_layer = self.layers[i-1]
                 self.layers[i].generate_interval_bounds(np.copy(prev_layer.numeric_relu_lb), np.copy(prev_layer.numeric_relu_ub))
 
-        if method == 2: #DeepPoly
+        elif method == 2: #DeepPoly
 
             #Keep affine bounding functions from previous layers in the form (weights, biases)
             aff_lbs = []
@@ -67,12 +82,15 @@ class Sequential:
                 layer.numeric_aff_lb = L
 
                 #Generate lower and upper bounding affine function for layer
+                if i > 0:
+                    layer.generate_DeepPoly_bounds(np.copy(self.layers[i-1].numeric_relu_lb), np.copy(self.layers[i-1].numeric_relu_ub))
+                else:
+                    layer.generate_DeepPoly_bounds(input_lb, input_ub)
 
-                layer.generate_DeepPoly_bounds()
                 aff_lbs.append( [np.copy(layer.funcw_aff_lb), np.copy(layer.funcb_aff_lb)] )
                 aff_ubs.append( [np.copy(layer.funcw_aff_ub), np.copy(layer.funcb_aff_ub)] )
 
-        if method == 3: #FastC2V
+        elif method == 3: #FastC2V
 
             #Keep affine bounding functions from previous layers in the form (weights, biases)
             aff_lbs = []
@@ -85,7 +103,7 @@ class Sequential:
                 L, U, x_lb, x_ub, top_lbs, top_ubs = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
 
                 #Find solution from backwards pass data
-                z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub)
+                z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, use_FP_relu)
 
 
                 #This is inefficient: loops over each neuron in layer
@@ -107,9 +125,18 @@ class Sequential:
                     for k, tighten_layer in enumerate(self.layers[0:i]):
 
                         #Find most violated inequalities given solution for fixed neuron and lower/upper bounded solutions
-                        new_aff_lb, viol_lb = tighten_layer.most_violated_inequality(prev_l, prev_u, z_lb[k][:,j], z_lb[k+1][:,j]) #lb
 
-                        new_aff_ub, viol_ub = tighten_layer.most_violated_inequality(prev_l, prev_u, z_ub[k][:,j], z_ub[k + 1][:,j]) #ub
+                        #Take ReLU of inputs if specified in parameter
+                        if k > 0 and use_FP_relu:
+                            z_lb_inp = np.maximum(z_lb[k][:,j],0)
+                            z_ub_inp = np.maximum(z_ub[k][:,j], 0)
+                        else:
+                            z_lb_inp = z_lb[k][:, j]
+                            z_ub_inp = z_ub[k][:, j]
+
+                        new_aff_lb, viol_lb = tighten_layer.most_violated_inequality(prev_l, prev_u, z_lb_inp, z_lb[k+1][:,j]) #lb
+
+                        new_aff_ub, viol_ub = tighten_layer.most_violated_inequality(prev_l, prev_u, z_ub_inp, z_ub[k+1][:,j]) #ub
 
                         #If the inequalities are violated, replace for this neuron
                         new_aff_ubs_lb[k][0] = np.where(viol_lb > 0, new_aff_lb[0], new_aff_ubs_lb[k][0])
@@ -138,18 +165,108 @@ class Sequential:
                 layer.numeric_aff_lb = L
 
                 #Generate lower and upper bounding affine function for layer
+                if i > 0:
+                    layer.generate_DeepPoly_bounds(np.copy(self.layers[i-1].numeric_relu_lb), np.copy(self.layers[i-1].numeric_relu_ub))
+                else:
+                    layer.generate_DeepPoly_bounds(input_lb, input_ub)
 
-                layer.generate_DeepPoly_bounds()
                 aff_lbs.append( [np.copy(layer.funcw_aff_lb), np.copy(layer.funcb_aff_lb)] )
                 aff_ubs.append( [np.copy(layer.funcw_aff_ub), np.copy(layer.funcb_aff_ub)] )
 
+        elif method == 4: #FlatC2V
+
+            # Keep affine bounding functions from previous layers in the form (weights, biases)
+            aff_lbs = []
+            aff_ubs = []
+
+            flat_aff_lbs = [] #TODO: add lb options?
+            flat_aff_ubs = []
 
 
+            for i, layer in enumerate(self.layers):
 
+                if i > 0:
+                    flat_aff_ubs.append( layer.flattest_inequality(np.copy(self.layers[i - 1].numeric_relu_lb),
+                                                   np.copy(self.layers[i - 1].numeric_relu_ub)) )
+                else:
+                    flat_aff_ubs.append( layer.flattest_inequality(input_lb, input_ub) )
 
+                # Generate lower and upper bounds and solution data from a backwards pass
+                L, U, x_lb, x_ub, top_lbs, top_ubs = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
 
+                if do_iterative_tighten:
 
+                    # Find solution from backwards pass data
+                    z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, use_FP_relu)
 
+                    # This is inefficient: loops over each neuron in layer
+                    # is it possible to vectorize these computations?
+
+                    # Generate new tightened numeric bounds at each neuron in present layer
+                    for j in range(layer.output_shape):
+                        new_aff_ubs_lb = []
+                        new_aff_ubs_ub = []
+                        for item in flat_aff_ubs:
+                            new_aff_ubs_lb.append(
+                                [np.copy(item[0]), np.copy(item[1])])  # replaced affine upper bounds for neuron lower bound
+                            new_aff_ubs_ub.append(
+                                [np.copy(item[0]), np.copy(item[1])])  # replaced affine upper bounds for neuron upper bound
+
+                        if use_viol:
+                            # Tighten bounds on each preceeding layer
+                            for k, tighten_layer in enumerate(self.layers[0:i]):
+
+                                # Find most violated inequalities given solution for fixed neuron and lower/upper bounded solutions
+
+                                # Take ReLU of inputs if specified in parameter
+                                if k > 0 and use_FP_relu:
+                                    z_lb_inp = np.maximum(z_lb[k][:, j], 0)
+                                    z_ub_inp = np.maximum(z_ub[k][:, j], 0)
+                                else:
+                                    z_lb_inp = z_lb[k][:, j]
+                                    z_ub_inp = z_ub[k][:, j]
+
+                                viol_lb = z_lb[k + 1][:, j] - (np.matmul(tighten_layer.weights.T, z_lb_inp) + tighten_layer.bias)  # lb
+
+                                viol_ub = z_ub[k + 1][:, j] - (np.matmul(tighten_layer.weights.T, z_ub_inp) + tighten_layer.bias) # ub
+
+                                # If the inequalities are violated, replace for this neuron
+                                new_aff_ubs_lb[k][0] = np.where(viol_lb > 0, flat_aff_ubs[k][0], new_aff_ubs_lb[k][0])
+                                new_aff_ubs_ub[k][0] = np.where(viol_ub > 0, flat_aff_ubs[k][0], new_aff_ubs_ub[k][0])
+
+                                new_aff_ubs_lb[k][1] = np.where(viol_lb > 0, flat_aff_ubs[k][1], new_aff_ubs_lb[k][1])
+                                new_aff_ubs_ub[k][1] = np.where(viol_ub > 0, flat_aff_ubs[k][1], new_aff_ubs_ub[k][1])
+
+                        # This is inefficient: only need backwards pass to a single neuron in the last layer, not all neurons
+                        # Also, only need lower or upper bound at a time, not both
+
+                        # Repeat backwards pass with new affine bounds for current neuron
+                        Lj_new, *__ = self.backwards_pass(i, aff_lbs, new_aff_ubs_lb, input_lb, input_ub)
+                        __, Uj_new, *__ = self.backwards_pass(i, aff_lbs, new_aff_ubs_ub, input_lb, input_ub)
+
+                        # Replace numeric bounds at current neuron if improved
+                        L[j] = max(Lj_new[j], L[j])
+                        U[j] = min(Uj_new[j], U[j])
+
+                # Set layer numeric lower and upper affine bounds
+                layer.numeric_aff_ub = U
+                layer.numeric_aff_lb = L
+
+                # Generate lower and upper bounding affine function for layer
+                if i > 0:
+                    layer.generate_DeepPoly_bounds(np.copy(self.layers[i - 1].numeric_relu_lb),
+                                                   np.copy(self.layers[i - 1].numeric_relu_ub))
+                else:
+                    layer.generate_DeepPoly_bounds(input_lb, input_ub)
+
+                aff_lbs.append([np.copy(layer.funcw_aff_lb), np.copy(layer.funcb_aff_lb)])
+
+                if use_flat_ubs:
+                    aff_ubs.append([np.copy(flat_aff_ubs[i][0]), np.copy(flat_aff_ubs[i][1])])
+                    layer.funcw_aff_ub = flat_aff_ubs[i][0]
+                    layer.funcb_aff_ub = flat_aff_ubs[i][1]
+                else:
+                    aff_ubs.append([np.copy(layer.funcw_aff_ub), np.copy(layer.funcb_aff_ub)])
 
 
 
@@ -215,7 +332,7 @@ class Sequential:
 
 
 
-    def forwards_pass(self, l_num, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub):
+    def forwards_pass(self, l_num, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, use_relu = True):
         """
         Generates a full solution for preceeding layers using a forward pass, based on results from backward propogation
         :param l_num: layer number to which the forward pass is done
@@ -252,20 +369,21 @@ class Sequential:
             next_z_lb = (np.matmul(aff_lbs[i][0].T, prev_lb) + np.tile(np.reshape(aff_lbs[i][1], (-1,1)), (1,n_neur))) * (1 - top_lbs[i]) + \
                         (np.matmul(aff_ubs[i][0].T, prev_lb) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur))) * top_lbs[i]
             next_z_ub = (np.matmul(aff_lbs[i][0].T, prev_ub) + np.tile(np.reshape(aff_lbs[i][1], (-1,1)), (1,n_neur))) * (1 - top_ubs[i]) + \
-                        (np.matmul(aff_ubs[i][0].T, prev_lb) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur))) * top_ubs[i]
+                        (np.matmul(aff_ubs[i][0].T, prev_ub) + np.tile(np.reshape(aff_ubs[i][1], (-1,1)), (1,n_neur))) * top_ubs[i]
+
 
             #Add layer solution to z vector
             z_lb.append(next_z_lb)
             z_ub.append(next_z_ub)
 
-            #Update previous layer solution
-            prev_lb = next_z_lb
-            prev_ub = next_z_ub
+            #Pass outputs through ReLU if specified in parameter
+            if use_relu:
+                prev_lb = np.copy(np.maximum(next_z_lb, 0))
+                prev_ub = np.copy(np.maximum(next_z_ub, 0))
+            else:
+                prev_lb = next_z_lb
+                prev_ub = next_z_ub
 
-            # print("Iter " + str(i))
-            # print(prev_lb.shape)
-            # print(top_lbs[i].shape)
-            # print(aff_lbs[i][0].shape)
 
         return z_lb, z_ub
 
@@ -310,14 +428,24 @@ class Dense(Layer):
         self.numeric_relu_ub = np.maximum(self.numeric_aff_ub, 0)
         self.numeric_relu_lb = np.maximum(self.numeric_aff_lb, 0)
 
-    def generate_DeepPoly_bounds(self):
+    def generate_DeepPoly_bounds(self, prev_l, prev_u):
         """
         Generate affine bounding functions on neuron layer using the DeepPoly method
         Requires self.numeric_aff_lb and self.numeric_aff_ub be set to numeric upper and lower bounds on each neruon
+        :param prev_l: lower bound on previous layer
+        :param prev_u: upper bound on previous layer
         """
 
         L = np.copy(self.numeric_aff_lb)
         U = np.copy(self.numeric_aff_ub)
+
+        #Take better of interval arithmetic and provided bounds
+        self.generate_interval_bounds(prev_l, prev_u)
+
+        L = np.maximum(np.copy(self.numeric_aff_lb), L)
+        U = np.minimum(np.copy(self.numeric_aff_ub), U)
+        self.numeric_aff_lb = L
+        self.numeric_aff_ub = U
 
         #Post-activation bounds on ReLU
         self.numeric_relu_ub = np.maximum(self.numeric_aff_ub, 0)
@@ -365,7 +493,7 @@ class Dense(Layer):
         :param prev_u: numeric upper bounds on the previous layer
         :param prev_z: forward pass solution in the previous layer for neuron
         :param curr_z: output of neuron
-        :return: aff_fun, v = affine inequality function (weights, bias), violation
+        :return: aff_fun, v: affine inequality function (weights, bias), violation
         """
 
         #Get current upper bounding function
@@ -389,27 +517,32 @@ class Dense(Layer):
             diffhat = Uhat - Lhat
 
             #Find values for knapsack algorithm
-            value = np.divide(prev_z - Lhat, diffhat)   #TODO: supress or avoid zero division runtime warning
+            value = np.full(diffhat.shape, float('inf'))
+            value = np.divide(prev_z - Lhat, diffhat, out = value, where = diffhat != 0)
 
             indsort = np.argsort(value) #indices in order of smallest value
 
             l_N = np.sum(neur_weight * Lhat) + neur_bias #l([n])
+            l_0 = np.sum(neur_weight * Uhat) + neur_bias #l(0)
 
             #Check feasibility
             if l_N >= 0:
                 #Neuron always active
-                # TODO: confirm check feasibility: l([n]) >= 0?
+                aff_w[:,i] = np.copy(self.weights[:,i])
+                aff_b[i] = np.copy(self.bias[i])
 
-                aff_w[:,i] = np.copy(self.funcw_aff_ub[:,i])
-                aff_b[i] = np.copy(self.funcb_aff_ub[i])
+                assert (abs(curr_z[i] - (np.matmul(aff_w[:,i].T, prev_z) + aff_b[i])) < 1e-10)
 
-            elif np.sum(neur_weight * Uhat) + neur_bias < 0:
+            elif l_0 < 0:
                 #Neuron always inactive
+
+                assert (abs(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])) < 1e-10)
+
                 pass
 
             else:
 
-                l_I = np.sum(neur_weight * Uhat) + neur_bias #l(0)
+                l_I = l_0 #l(0)
 
                 #Add indices to I/h until condition on l is met
                 j = -1
@@ -425,9 +558,8 @@ class Dense(Layer):
                 #Compute final value of l(I)
                 l_I = np.sum(neur_weight * Uhat) + neur_bias - np.sum(neur_weight[I] * diffhat[I])
 
-                #TODO: remove if unnecessary
-                assert (l_I >= 0)
-                assert (l_I - neur_weight[h]*diffhat[h] < 0)
+                assert (l_I >= -(1e-10))
+                assert (l_I - neur_weight[h]*diffhat[h] < 1e-10)
 
                 #Replace affine inequality with that represented by I/h
                 aff_w[I,i] = neur_weight[I]
@@ -442,7 +574,162 @@ class Dense(Layer):
 
         return aff_fun, v
 
+    def flattest_inequality(self, prev_l, prev_u):
+        """
+        Finds the affine representation of the flattest inequality from the convex relaxation for a neuron
+        :param prev_l: numeric lower bounds on the previous layer
+        :param prev_u: numeric upper bounds on the previous layer
+        :return: aff_fun: affine inequality function (weights, bias)
+        """
 
+        #Get current upper bounding function
+        aff_w = np.zeros(self.weights.shape)
+        aff_b = np.zeros(self.bias.shape)
+
+        #Find inequality at each neuron
+        for i in range(self.output_shape):
+
+            #Get neuron affine function
+            neur_weight = np.copy(self.weights[:,i])
+            neur_bias = np.copy(self.bias[i])
+
+            #Construct lower/upper bound objects
+            Lhat = np.where(neur_weight >= 0, prev_l, prev_u)
+            Uhat = np.where(neur_weight >= 0, prev_u, prev_l)
+
+            diffhat = Uhat - Lhat
+
+            l_N = np.sum(neur_weight * Lhat) + neur_bias #l([n])
+            l_0 = np.sum(neur_weight * Uhat) + neur_bias #l(0)
+
+            #Check feasibility
+            if l_N >= 0:
+                #Neuron always active
+                aff_w[:,i] = np.copy(self.weights[:,i])
+                aff_b[i] = np.copy(self.bias[i])
+
+                #assert (abs(curr_z[i] - (np.matmul(aff_w[:,i].T, prev_z) + aff_b[i])) < 1e-10)
+
+            elif l_0 < 0:
+                #Neuron always inactive
+
+                #assert (abs(curr_z[i] - (np.matmul(aff_w[:, i].T, prev_z) + aff_b[i])) < 1e-10)
+
+                pass
+
+            else:
+
+                ######FlatCut1 Model Here#######
+
+                #Set initial I,h,cost solution
+                c = float('inf')
+                h = 0
+                I = []
+
+                #Compute set of potential optimal h based on largest w*(U-L)
+                value = neur_weight*diffhat
+                indsort = np.argsort(value)  # indices in order of smallest value
+
+                hset = [] #Set of candidate h
+                l_hset = l_0
+
+                h_idx = self.input_shape - 1
+                while l_hset >= 0: #l(hset) must be negative to have all h)
+
+                    #Add next largest h to hset
+                    hnext = indsort[h_idx]
+                    hset.append(hnext)
+
+                    l_hset = l_hset - value[hnext]
+                    h_idx = h_idx - 1
+
+                #Solve QKP over all candidate h, keep solution with lowest cost
+                for hc in hset:
+
+                    mpt = np.sum(neur_weight*(Uhat+Lhat)) + 2*neur_bias
+
+                    m = gp.Model("FlatCut1")
+
+                    u = m.addMVar(shape = (self.input_shape), vtype = GRB.BINARY) #binary inclusion variables for I
+
+                    #Add necessary constraint
+                    if mpt < 0:
+                        m.addConstr((neur_weight*diffhat) @ u <= np.sum(neur_weight*Uhat) + neur_bias, "f(Il)")
+                    else:
+                        m.addConstr((-neur_weight*diffhat) @ u <= neur_weight[hc]*(diffhat[hc]) - np.sum(neur_weight*Uhat) - neur_bias, "f(Ir)")
+
+                    #Fix h not in I
+                    m.addConstr(u[hc] == 0, "[n]\h")
+
+                    #Build objective function
+                    qMat = np.outer(neur_weight*diffhat,neur_weight*diffhat)/(neur_weight[hc]*diffhat[hc]) #quadratic term matrix
+                    obj = (u @ qMat @ u) + neur_weight*diffhat*(1-(np.sum(neur_weight*diffhat))/(neur_weight[hc]*diffhat[hc])) @ u
+
+                    m.setObjective(obj, GRB.MINIMIZE)
+                    m.setParam('OutputFlag', 0)
+
+                    #TODO: what should this tolerance be
+                    m.setParam('FeasibilityTol', 1e-9)
+                    m.setParam('OptimalityTol', 1e-9)
+
+                    m.optimize()
+
+                    #Extract optimal candidate I
+                    Ic = np.where(u.X > .5)
+                    l_Ic = np.sum(neur_weight * Uhat) + neur_bias - np.sum(neur_weight[Ic] * diffhat[Ic])
+
+                    #Confirm validity of computed solution
+                    assert (l_Ic >= -1e-5)
+                    assert (l_Ic - neur_weight[hc] * diffhat[hc] < 1e-5)
+
+                    #Compute objective cost of candidate I/h pair
+                    cc = (l_Ic / (neur_weight[hc]*diffhat[hc]) - 1)*(l_Ic - mpt)
+
+                    #If cost improved, keep current solution
+                    if cc < c:
+                        I = Ic
+                        h = hc
+                        c = cc
+
+                ######End Model######
+
+                #Keep I and h, objective value
+
+                #Compute final value of l(I)
+                l_I = np.sum(neur_weight * Uhat) + neur_bias - np.sum(neur_weight[I] * diffhat[I])
+
+                assert (l_I >= -1e-5)
+                assert (l_I - neur_weight[h]*diffhat[h] < 1e-5)
+
+                #Replace affine inequality with that represented by I/h
+                aff_w[I,i] = neur_weight[I]
+                aff_w[h,i] = l_I / diffhat[h]
+
+                aff_b[i] = -(np.sum(neur_weight[I]*Lhat[I]) + l_I*Lhat[h]/diffhat[h])
+
+        aff_fun = [aff_w, aff_b]
+
+        return aff_fun
+
+
+class BoundsOptions():
+
+    def __init__(self, use_FP_relu = True, use_viol = False, do_iterative_tighten = True,
+                        use_flat_ubs = False):
+        """
+        :param use_FP_relu: boolean indicator of whether to use ReLU tightening between layers of forwards pass
+        :param use_viol: boolean indicator of whether to require a cut be violated to replace (FlatC2V only)
+        :param do_iterative_tighten: boolean indicator of whether to tighten a neuron with new bounds from the previous
+        :param use_flat_ubs: boolean indicator of whether to use affine inequalities from flat cuts instead of DeepPoly
+        """
+
+        self.use_FP_relu = use_FP_relu
+        self.use_viol = use_viol
+        self.do_iterative_tighten = do_iterative_tighten
+        self.use_flat_ubs = use_flat_ubs
+
+        if use_viol and not do_iterative_tighten:
+            raise(Exception("Must do iterative tightening (do_iterative_tighten) to check violations (use_viol)"))
 
 
 class AffineFunction:

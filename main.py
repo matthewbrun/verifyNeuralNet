@@ -11,6 +11,8 @@ def train_model():
 
     model = keras.Sequential()
     model.add(layers.Dense(12, input_dim=24, activation='relu'))
+    model.add(layers.Dense(120, activation='relu'))
+    model.add(layers.Dense(64, activation='relu'))
     model.add(layers.Dense(6, activation='relu'))
     model.add(layers.Dense(4,activation='relu'))
     model.add(layers.Dense(2,activation='relu'))
@@ -69,11 +71,16 @@ def test_layer_bound_solution():
 
     #print(out[0][1]-out[0][0])
 
-    #print(vnn.boundDiff(m, inp, d, 0, 1, 1))
+    options = nnet.BoundsOptions(use_FP_relu = True, use_viol = False, do_iterative_tighten = True,
+                        use_flat_ubs = False)
 
-    #print(vnn.boundDiff(m, inp, d, 0, 1, 2))
+    print(vnn.boundDiff(m, inp, d, 0, 1, 1, options))
 
-    print(vnn.boundDiff(m, inp, d, 0, 1, 3))
+    print(vnn.boundDiff(m, inp, d, 0, 1, 2, options))
+
+    print(vnn.boundDiff(m, inp, d, 0, 1, 3, options))
+
+    print(vnn.boundDiff(m, inp, d, 0, 1, 4, options))
 
 def test_bound_quality():
 
@@ -100,6 +107,17 @@ def test_bound_quality():
                 flag = False
                 break
 
+def test_flatcut():
+
+    m = train_model()
+    n = nnet.Sequential(m)
+    inp = np.arange(24)
+    d = .5
+    lb = inp-d
+    ub = inp+d
+
+    n.layers[0].flattest_inequality(lb,ub,0,0)
+
 
 
 
@@ -109,4 +127,6 @@ def test_bound_quality():
 
 #test_layer_bound_solution()
 
-test_bound_quality()
+#test_bound_quality()
+
+#test_flatcut()
