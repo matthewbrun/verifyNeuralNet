@@ -6,7 +6,7 @@ import numpy as np
 import nnet
 
 
-def bigMLP(network, input, inf_d, real_class, pred_class, method, options = False):
+def bigMLP(network, input, inf_d, real_class, pred_class, options = False):
     """
     Solves an LP relaxation of the big M formulation of the ReLU activations in provided network to maximize the
     difference between desired pred_class and actual real_class of the input within an infinity norm distance of inf_d
@@ -16,14 +16,13 @@ def bigMLP(network, input, inf_d, real_class, pred_class, method, options = Fals
     :param inf_d: infinity norm distance around input to search for example
     :param real_class: output class of input
     :param pred_class: desired class of adversarial example
-    :param method: method for bound propogation, 1 = interval arithmetic
     :param options: BoundsOptions object specifying method options
     :return: objective value, adversarial example
     """
 
     #Create nnet object and generate numeric bounds
     n = nnet.Sequential(network)
-    n.generate_bounds(method, input, inf_d, options)
+    n.generate_bounds(input, inf_d, options)
 
     #Create model
     m = gp.Model("bigM")
@@ -79,7 +78,7 @@ def bigMLP(network, input, inf_d, real_class, pred_class, method, options = Fals
     return m.objVal, x.X
 
 
-def boundDiff(network, input, inf_d, real_class, pred_class, method, options = False):
+def boundDiff(network, input, inf_d, real_class, pred_class, options = False):
     """
     Solves an LP relaxation of the big M formulation of the ReLU activations in provided network to maximize the
     difference between desired pred_class and actual real_class of the input within an infinity norm distance of inf_d
@@ -89,7 +88,6 @@ def boundDiff(network, input, inf_d, real_class, pred_class, method, options = F
     :param inf_d: infinity norm distance around input to search for example
     :param real_class: output class of input
     :param pred_class: desired class of adversarial example
-    :param method: method for bound propogation, 1 = interval arithmetic
     :return: objective value
     """
 
@@ -107,7 +105,7 @@ def boundDiff(network, input, inf_d, real_class, pred_class, method, options = F
 
     n.addLayer(classdiff_weights, classdiff_bias)
 
-    n.generate_bounds(method, input, inf_d, options)
+    n.generate_bounds(input, inf_d, options)
 
     #Extract upper bound on difference layer output
     ub = n.layers[-1].numeric_aff_ub

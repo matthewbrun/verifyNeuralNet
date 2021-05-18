@@ -34,23 +34,20 @@ class Sequential:
         layerclass = Dense(weights, bias, "l" + str(len(self.layers)))
         self.layers.append(layerclass)
 
-    def generate_bounds(self, method, input, distance, options = False):
+    def generate_bounds(self, input, distance, options = False):
         """
         Generate upper and lower bounds on the affine function within each neuron
 
-        :param method: method for bound propogation, 1 = interval arithmetic, 2 = DeepPoly, 3 = FastC2V, 4 = FlatC2V
         :param input: numeric input to verify
         :param distance: l_inf distance around input to consider
-        :param options: BoundsOptions object specifying method options
+        :param options: BoundsOptions object specifying method and options,
+                methods include: IntervalArithmetic, DeepPoly, FastC2V, FlatC2V
         """
 
         #Get options
         if not options:
-            options = BoundsOptions()
-        use_FP_relu = options.use_FP_relu
-        use_viol = options.use_viol
-        do_iterative_tighten = options.do_iterative_tighten
-        use_flat_ubs = options.use_flat_ubs
+            options = BoundsOptions('IntervalArithmetic')
+        method = options.method
 
         #Input bounds are determined from l_inf norm around a numeric input
         input_ub = input + distance
@@ -103,7 +100,7 @@ class Sequential:
                 L, U, x_lb, x_ub, top_lbs, top_ubs = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
 
                 #Find solution from backwards pass data
-                z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, use_FP_relu)
+                z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, options.use_FP_relu)
 
 
                 #This is inefficient: loops over each neuron in layer
@@ -127,7 +124,7 @@ class Sequential:
                         #Find most violated inequalities given solution for fixed neuron and lower/upper bounded solutions
 
                         #Take ReLU of inputs if specified in parameter
-                        if k > 0 and use_FP_relu:
+                        if k > 0 and options.use_FP_relu:
                             z_lb_inp = np.maximum(z_lb[k][:,j],0)
                             z_ub_inp = np.maximum(z_ub[k][:,j], 0)
                         else:
@@ -194,10 +191,10 @@ class Sequential:
                 # Generate lower and upper bounds and solution data from a backwards pass
                 L, U, x_lb, x_ub, top_lbs, top_ubs = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
 
-                if do_iterative_tighten:
+                if options.do_iterative_tighten:
 
                     # Find solution from backwards pass data
-                    z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, use_FP_relu)
+                    z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, options.use_FP_relu)
 
                     # This is inefficient: loops over each neuron in layer
                     # is it possible to vectorize these computations?
@@ -212,14 +209,14 @@ class Sequential:
                             new_aff_ubs_ub.append(
                                 [np.copy(item[0]), np.copy(item[1])])  # replaced affine upper bounds for neuron upper bound
 
-                        if use_viol:
+                        if options.use_viol:
                             # Tighten bounds on each preceeding layer
                             for k, tighten_layer in enumerate(self.layers[0:i]):
 
                                 # Find most violated inequalities given solution for fixed neuron and lower/upper bounded solutions
 
                                 # Take ReLU of inputs if specified in parameter
-                                if k > 0 and use_FP_relu:
+                                if k > 0 and options.use_FP_relu:
                                     z_lb_inp = np.maximum(z_lb[k][:, j], 0)
                                     z_ub_inp = np.maximum(z_ub[k][:, j], 0)
                                 else:
@@ -261,12 +258,18 @@ class Sequential:
 
                 aff_lbs.append([np.copy(layer.funcw_aff_lb), np.copy(layer.funcb_aff_lb)])
 
-                if use_flat_ubs:
+                if options.use_flat_ubs:
                     aff_ubs.append([np.copy(flat_aff_ubs[i][0]), np.copy(flat_aff_ubs[i][1])])
                     layer.funcw_aff_ub = flat_aff_ubs[i][0]
                     layer.funcb_aff_ub = flat_aff_ubs[i][1]
                 else:
                     aff_ubs.append([np.copy(layer.funcw_aff_ub), np.copy(layer.funcb_aff_ub)])
+
+        elif method == 5: #Mean propogated point
+
+
+
+            pass
 
 
 
@@ -714,22 +717,37 @@ class Dense(Layer):
 
 class BoundsOptions():
 
-    def __init__(self, use_FP_relu = True, use_viol = False, do_iterative_tighten = True,
+    def __init__(self, method, use_FP_relu = True, use_viol = False, do_iterative_tighten = True,
                         use_flat_ubs = False):
         """
+        :param method: method for bound propogation, 1 = interval arithmetic, 2 = DeepPoly, 3 = FastC2V, 4 = FlatC2V
         :param use_FP_relu: boolean indicator of whether to use ReLU tightening between layers of forwards pass
         :param use_viol: boolean indicator of whether to require a cut be violated to replace (FlatC2V only)
         :param do_iterative_tighten: boolean indicator of whether to tighten a neuron with new bounds from the previous
         :param use_flat_ubs: boolean indicator of whether to use affine inequalities from flat cuts instead of DeepPoly
         """
 
-        self.use_FP_relu = use_FP_relu
-        self.use_viol = use_viol
-        self.do_iterative_tighten = do_iterative_tighten
-        self.use_flat_ubs = use_flat_ubs
+        valid_methods = ["IntervalArithmetic", "DeepPoly", "FastC2V", "FlatC2V"]
+        if method not in valid_methods:
+            raise(Exception("Invalid method.  Valid methods include: " + str(valid_methods)))
 
-        if use_viol and not do_iterative_tighten:
-            raise(Exception("Must do iterative tightening (do_iterative_tighten) to check violations (use_viol)"))
+        self.method = valid_methods.index(method) + 1
+
+        if self.method == 3: #FastC2V
+            self.use_FP_relu = use_FP_relu
+
+        elif self.method == 4: #FlatC2V
+            self.use_FP_relu = use_FP_relu
+            self.use_viol = use_viol
+            self.do_iterative_tighten = do_iterative_tighten
+            self.use_flat_ubs = use_flat_ubs
+
+            if use_viol and not do_iterative_tighten:
+                raise(Exception("Must do iterative tightening (do_iterative_tighten) to check violations (use_viol)"))
+
+        elif self.method == 5:
+            pass
+
 
 
 class AffineFunction:

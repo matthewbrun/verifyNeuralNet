@@ -71,16 +71,19 @@ def test_layer_bound_solution():
 
     #print(out[0][1]-out[0][0])
 
-    options = nnet.BoundsOptions(use_FP_relu = True, use_viol = False, do_iterative_tighten = True,
+    options1 = nnet.BoundsOptions("IntervalArithmetic")
+    options2 = nnet.BoundsOptions("DeepPoly")
+    options3 = nnet.BoundsOptions("FastC2V", use_FP_relu = True)
+    options4 = nnet.BoundsOptions("FlatC2V", use_FP_relu = True, use_viol = False, do_iterative_tighten = True,
                         use_flat_ubs = False)
 
-    print(vnn.boundDiff(m, inp, d, 0, 1, 1, options))
+    print(vnn.boundDiff(m, inp, d, 0, 1, options1))
 
-    print(vnn.boundDiff(m, inp, d, 0, 1, 2, options))
+    print(vnn.boundDiff(m, inp, d, 0, 1, options2))
 
-    print(vnn.boundDiff(m, inp, d, 0, 1, 3, options))
+    print(vnn.boundDiff(m, inp, d, 0, 1, options3))
 
-    print(vnn.boundDiff(m, inp, d, 0, 1, 4, options))
+    print(vnn.boundDiff(m, inp, d, 0, 1, options4))
 
 def test_bound_quality():
 
@@ -125,7 +128,7 @@ def test_flatcut():
 
 #test_LP()
 
-#test_layer_bound_solution()
+test_layer_bound_solution()
 
 #test_bound_quality()
 
