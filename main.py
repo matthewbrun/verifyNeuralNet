@@ -11,7 +11,7 @@ def train_model():
 
     model = keras.Sequential()
     model.add(layers.Dense(12, input_dim=24, activation='relu'))
-    model.add(layers.Dense(120, activation='relu'))
+    model.add(layers.Dense(32, activation='relu'))
     model.add(layers.Dense(64, activation='relu'))
     model.add(layers.Dense(6, activation='relu'))
     model.add(layers.Dense(4,activation='relu'))
@@ -74,8 +74,10 @@ def test_layer_bound_solution():
     options1 = nnet.BoundsOptions("IntervalArithmetic")
     options2 = nnet.BoundsOptions("DeepPoly")
     options3 = nnet.BoundsOptions("FastC2V", use_FP_relu = True)
-    options4 = nnet.BoundsOptions("FlatC2V", use_FP_relu = True, use_viol = False, do_iterative_tighten = True,
+    options4 = nnet.BoundsOptions("FlatC2V", use_FP_relu = True, use_viol = False, do_iterative_tighten = False,
                         use_flat_ubs = False)
+    options5 = nnet.BoundsOptions("MeanC2V", num_points=100, use_FP_relu = True, use_viol = False,
+                        use_mean_ubs = False)
 
     print(vnn.boundDiff(m, inp, d, 0, 1, options1))
 
@@ -84,6 +86,8 @@ def test_layer_bound_solution():
     print(vnn.boundDiff(m, inp, d, 0, 1, options3))
 
     print(vnn.boundDiff(m, inp, d, 0, 1, options4))
+
+    print(vnn.boundDiff(m, inp, d, 0, 1, options5))
 
 def test_bound_quality():
 

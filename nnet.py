@@ -224,7 +224,6 @@ class Sequential:
                                     z_ub_inp = z_ub[k][:, j]
 
                                 viol_lb = z_lb[k + 1][:, j] - (np.matmul(tighten_layer.weights.T, z_lb_inp) + tighten_layer.bias)  # lb
-
                                 viol_ub = z_ub[k + 1][:, j] - (np.matmul(tighten_layer.weights.T, z_ub_inp) + tighten_layer.bias) # ub
 
                                 # If the inequalities are violated, replace for this neuron
@@ -265,11 +264,106 @@ class Sequential:
                 else:
                     aff_ubs.append([np.copy(layer.funcw_aff_ub), np.copy(layer.funcb_aff_ub)])
 
-        elif method == 5: #Mean propogated point
+        elif method == 5: #MeanC2V
+
+            points = 2 * distance * np.random.rand(len(input), options.num_points) - distance + np.tile(input, (options.num_points, 1)).T
+            mean_pts = [np.mean(points, axis=1)]
+
+            # Keep affine bounding functions from previous layers in the form (weights, biases)
+            aff_lbs = []
+            aff_ubs = []
+
+            mean_aff_lbs = [] #TODO: add lb options?
+            mean_aff_ubs = []
+
+            for i, layer in enumerate(self.layers):
+
+                # Generate lower and upper bounds and solution data from a backwards pass
+                L, U, x_lb, x_ub, top_lbs, top_ubs = self.backwards_pass(i, aff_lbs, aff_ubs, input_lb, input_ub)
+
+                # Find solution from backwards pass data
+                z_lb, z_ub = self.forwards_pass(i, aff_lbs, aff_ubs, top_lbs, top_ubs, x_lb, x_ub, options.use_FP_relu)
+
+                #Compute propogation of points
+                points = layer.evaluate(points, options.use_FP_relu)
+                mean_pts.append(np.mean(points, axis=1))
+
+                if i > 0:
+                    mean_aff_ubs.append(layer.most_violated_inequality(np.copy(self.layers[i - 1].numeric_relu_lb),
+                                                   np.copy(self.layers[i - 1].numeric_relu_ub), mean_pts[i], layer.evaluate(mean_pts[i], options.use_FP_relu))[0])
+                else:
+                    mean_aff_ubs.append(layer.most_violated_inequality(input_lb, input_ub, mean_pts[i], layer.evaluate(mean_pts[i], options.use_FP_relu))[0])
+
+                # This is inefficient: loops over each neuron in layer
+                # is it possible to vectorize these computations?
+
+                # Generate new tightened numeric bounds at each neuron in present layer
+                for j in range(layer.output_shape):
+                    new_aff_ubs_lb = []
+                    new_aff_ubs_ub = []
+                    for item in aff_ubs:
+                        new_aff_ubs_lb.append(
+                            [np.copy(item[0]), np.copy(item[1])])  # replaced affine upper bounds for neuron lower bound
+                        new_aff_ubs_ub.append(
+                            [np.copy(item[0]), np.copy(item[1])])  # replaced affine upper bounds for neuron upper bound
+
+                    if options.use_viol:
+                        # Tighten bounds on each preceeding layer
+                        for k, tighten_layer in enumerate(self.layers[0:i]):
+
+                            # Find most violated inequalities given solution for fixed neuron and lower/upper bounded solutions
+
+                            # Take ReLU of inputs if specified in parameter
+                            if k > 0 and options.use_FP_relu:
+                                z_lb_inp = np.maximum(z_lb[k][:, j], 0)
+                                z_ub_inp = np.maximum(z_ub[k][:, j], 0)
+                            else:
+                                z_lb_inp = z_lb[k][:, j]
+                                z_ub_inp = z_ub[k][:, j]
+
+                            viol_lb = z_lb[k + 1][:, j] - (np.matmul(tighten_layer.weights.T, z_lb_inp) + tighten_layer.bias)  # lb
+                            viol_ub = z_ub[k + 1][:, j] - (np.matmul(tighten_layer.weights.T, z_ub_inp) + tighten_layer.bias)  # ub
+
+                            # If the inequalities are violated, replace for this neuron
+                            new_aff_ubs_lb[k][0] = np.where(viol_lb > 0, mean_aff_ubs[k][0], new_aff_ubs_lb[k][0])
+                            new_aff_ubs_ub[k][0] = np.where(viol_ub > 0, mean_aff_ubs[k][0], new_aff_ubs_ub[k][0])
+
+                            new_aff_ubs_lb[k][1] = np.where(viol_lb > 0, mean_aff_ubs[k][1], new_aff_ubs_lb[k][1])
+                            new_aff_ubs_ub[k][1] = np.where(viol_ub > 0, mean_aff_ubs[k][1], new_aff_ubs_ub[k][1])
+
+                    # This is inefficient: only need backwards pass to a single neuron in the last layer, not all neurons
+                    # Also, only need lower or upper bound at a time, not both
+
+                    # Repeat backwards pass with new affine bounds for current neuron
+                    Lj_new, *__ = self.backwards_pass(i, aff_lbs, new_aff_ubs_lb, input_lb, input_ub)
+                    __, Uj_new, *__ = self.backwards_pass(i, aff_lbs, new_aff_ubs_ub, input_lb, input_ub)
+
+                    # Replace numeric bounds at current neuron if improved
+                    L[j] = max(Lj_new[j], L[j])
+                    U[j] = min(Uj_new[j], U[j])
+
+                # Set layer numeric lower and upper affine bounds
+                layer.numeric_aff_ub = U
+                layer.numeric_aff_lb = L
+
+                # Generate lower and upper bounding affine function for layer
+                if i > 0:
+                    layer.generate_DeepPoly_bounds(np.copy(self.layers[i - 1].numeric_relu_lb),
+                                                   np.copy(self.layers[i - 1].numeric_relu_ub))
+                else:
+                    layer.generate_DeepPoly_bounds(input_lb, input_ub)
+
+                aff_lbs.append([np.copy(layer.funcw_aff_lb), np.copy(layer.funcb_aff_lb)])
+
+                if options.use_mean_ubs:
+                    aff_ubs.append([np.copy(mean_aff_ubs[i][0]), np.copy(mean_aff_ubs[i][1])])
+                    layer.funcw_aff_ub = mean_aff_ubs[i][0]
+                    layer.funcb_aff_ub = mean_aff_ubs[i][1]
+                else:
+                    aff_ubs.append([np.copy(layer.funcw_aff_ub), np.copy(layer.funcb_aff_ub)])
 
 
-
-            pass
+            return points
 
 
 
@@ -412,6 +506,29 @@ class Dense(Layer):
         self.input_shape = self.weights.shape[0]
         self.output_shape = self.weights.shape[1]
 
+    def evaluate(self, points, use_relu = True):
+        """
+        Evaluate a set of input points through the neuron
+        :param points: points at which to evaluate the neuron, each point in a column
+        :param use_relu: boolean indicator of whether to take ReLU transformation of outputs
+        :return: out: output values
+        """
+
+        #TODO: remove cases?
+        num_pts = 1
+        s = points.shape
+        if len(s) > 1:
+            out = np.matmul(self.weights.T, points) + np.tile(self.bias, (num_pts, 1)).T
+            num_pts = s[1]
+
+        else:
+            out = np.matmul(self.weights.T, points) + self.bias
+
+        if use_relu:
+            out = np.maximum(out, 0)
+
+        return out
+
     def generate_interval_bounds(self, prev_l, prev_u):
         """
         Generate bounds for the layer using interval arithmetic given numeric bounds on the previous layer
@@ -500,8 +617,8 @@ class Dense(Layer):
         """
 
         #Get current upper bounding function
-        aff_w = np.zeros(self.funcw_aff_ub.shape)
-        aff_b = np.zeros(self.funcb_aff_ub.shape)
+        aff_w = np.zeros(self.weights.shape)
+        aff_b = np.zeros(self.bias.shape)
 
         #Violations at solution for each neuron
         v = np.zeros((self.output_shape))
@@ -718,7 +835,7 @@ class Dense(Layer):
 class BoundsOptions():
 
     def __init__(self, method, use_FP_relu = True, use_viol = False, do_iterative_tighten = True,
-                        use_flat_ubs = False):
+                        use_flat_ubs = False, use_mean_ubs = False, num_points = 100):
         """
         :param method: method for bound propogation, 1 = interval arithmetic, 2 = DeepPoly, 3 = FastC2V, 4 = FlatC2V
         :param use_FP_relu: boolean indicator of whether to use ReLU tightening between layers of forwards pass
@@ -727,7 +844,7 @@ class BoundsOptions():
         :param use_flat_ubs: boolean indicator of whether to use affine inequalities from flat cuts instead of DeepPoly
         """
 
-        valid_methods = ["IntervalArithmetic", "DeepPoly", "FastC2V", "FlatC2V"]
+        valid_methods = ["IntervalArithmetic", "DeepPoly", "FastC2V", "FlatC2V", "MeanC2V"]
         if method not in valid_methods:
             raise(Exception("Invalid method.  Valid methods include: " + str(valid_methods)))
 
@@ -745,8 +862,12 @@ class BoundsOptions():
             if use_viol and not do_iterative_tighten:
                 raise(Exception("Must do iterative tightening (do_iterative_tighten) to check violations (use_viol)"))
 
-        elif self.method == 5:
-            pass
+        elif self.method == 5: #MeanC2V
+            self.num_points = num_points
+            self.use_FP_relu = use_FP_relu
+            self.use_viol = use_viol
+            self.use_mean_ubs = use_mean_ubs
+
 
 
 
