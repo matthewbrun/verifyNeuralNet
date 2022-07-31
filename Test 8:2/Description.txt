@@ -1,0 +1,9 @@
+8/2 Test
+Deep network - 64/16/10
+15 epochs training
+use_FP_relu = True
+use_viol = True
+do_iterative_tighten = True
+use_flat_ubs = False
+use_mean_ubs = False
+num_points = 100

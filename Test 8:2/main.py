@@ -180,7 +180,7 @@ def test_on_trained():
     score_arr = np.zeros(5)
     methods = ["IntervalArithmetic", "DeepPoly", "FastC2V", "FlatC2V", "MeanC2V"]
     for i in range(5):
-        options = nnet.BoundsOptions(methods[i], use_flat_ubs = True, use_mean_ubs = True)
+        options = nnet.BoundsOptions(methods[i], use_viol = True)
         score = vnn.boundDiff(model, sample, .2, real_class, compare_class, options)
         score_arr[i] = score
         print("BoundDiff ", methods[i], ": ", score)
